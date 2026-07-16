@@ -190,13 +190,6 @@ blocks:
       - name: HCP_AUTH_SECRET
         value: $vault_auth
   - action: ./HCP_Vault_Dedicated_Get_Secret
-    name: get_secret_hcm_mesh_api_key
-    inputs:
-      - name: secret_name
-        value: '"hcm_mesh_api_key"'
-      - name: HCP_AUTH_SECRET
-        value: $vault_auth
-  - action: ./HCP_Vault_Dedicated_Get_Secret
     name: get_secret_pull_secret
     inputs:
       - name: secret_name
@@ -226,7 +219,6 @@ blocks:
               "ec2_ip": $target_ip,
               "instana_agent_key": $get_secret_instana_agent_key.result,
               "registry_pwd": $get_secret_pull_secret.result,
-              "mesh_api_key": $get_secret_hcm_mesh_api_key.result,
               "instance_name": $instance_name,
               "service_type": $service_type,
               "location": $location,
@@ -236,7 +228,6 @@ blocks:
               "feature_instana": $feature_instana,
               "feature_sevone": $feature_sevone,
               "feature_turbonomic": $feature_turbonomic,
-              "feature_hcm": $feature_hcm,
               "app_name": $app_name,
               "cloud_provider": $cloud_provider
           }
