@@ -77,11 +77,11 @@ blocks:
           {
               "data": {
                   "attributes": {
+                      "working-directory": $cloud_provider.toLowerCase(),
                       "vcs-repo": {
                           "oauth-token-id": $filter_terraform_oauth_token_id.result,
                           "branch": $HCP_TERRAFORM_WORKSPACE_BRANCH,
-                          "identifier": $WORKSPACE_VCS_IDENTIFIER,
-                          "working-directory": $cloud_provider.toLowerCase()
+                          "identifier": $WORKSPACE_VCS_IDENTIFIER
                       },
                       "execution-mode": $WORKSPACE_EXECUTION_MODE,
                       "allow-destroy-plan": true,

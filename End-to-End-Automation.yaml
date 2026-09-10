@@ -328,6 +328,14 @@ variables:
     type:
       type: string
     value: '"cayoback2222"'
+  - name: cloud_provider
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"AWS"'
   - name: instance_type
     required: false
     isInput: true
@@ -483,14 +491,6 @@ variables:
     type:
       type: string
     value: '"192.168.1.192"'
-  - name: cloud_provider
-    required: true
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"AWS"'
 meta:
   workerGroup: default
   description: "End-to-End Automation: Fetch secrets from HCP Vault, Provision Resources\
