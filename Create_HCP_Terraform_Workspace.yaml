@@ -270,6 +270,26 @@ blocks:
       - name: workspace_id
         value: $create_workspace.result.data.id
   - action: system/HashiCorp/Terraform/Workspace Variables/Create a Variable
+    name: create_var_feature_turbonomic
+    inputs:
+      - name: authKey
+        value: $AuthOverride_1.result
+      - name: body
+        value: |-
+          {
+              "data": {
+                  "type": "vars",
+
+                  "attributes": {
+                      "key": "ansible_var_feature_turbonomic",
+                      "value": $feature_turbonomic,
+                      "category": "terraform"
+                  }
+              }
+          }
+      - name: workspace_id
+        value: $create_workspace.result.data.id
+  - action: system/HashiCorp/Terraform/Workspace Variables/Create a Variable
     name: create_var_ansible_remote_user
     inputs:
       - name: authKey
