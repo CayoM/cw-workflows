@@ -100,8 +100,8 @@ blocks:
             value: $ssh_username
           - name: ansible_remote_port
             value: $port
-          - name: ansible_var_location
-            value: $location
+          - name: cloud_provider
+            value: $cloud_provider
       - action: assign
         name: Assign_2
         variable: $target_ip
@@ -221,7 +221,6 @@ blocks:
               "registry_pwd": $get_secret_pull_secret.result,
               "instance_name": $instance_name,
               "service_type": $service_type,
-              "location": $location,
               "ansible_port": $port,
               "remote_user": $ssh_username,
               "feature_kubecost": $feature_kubecost,
@@ -345,14 +344,6 @@ variables:
     type:
       type: string
     value: '"backend"'
-  - name: location
-    required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"south"'
   - name: tags
     required: false
     isInput: false
@@ -493,8 +484,8 @@ variables:
       type: string
     value: '"192.168.1.192"'
   - name: cloud_provider
-    required: false
-    isInput: false
+    required: true
+    isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:

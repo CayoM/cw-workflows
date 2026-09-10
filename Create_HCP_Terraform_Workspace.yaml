@@ -80,7 +80,8 @@ blocks:
                       "vcs-repo": {
                           "oauth-token-id": $filter_terraform_oauth_token_id.result,
                           "branch": $HCP_TERRAFORM_WORKSPACE_BRANCH,
-                          "identifier": $WORKSPACE_VCS_IDENTIFIER
+                          "identifier": $WORKSPACE_VCS_IDENTIFIER,
+                          "working-directory": $cloud_provider.toLowerCase()
                       },
                       "execution-mode": $WORKSPACE_EXECUTION_MODE,
                       "allow-destroy-plan": true,
@@ -309,7 +310,7 @@ blocks:
       - name: workspace_id
         value: $create_workspace.result.data.id
   - action: system/HashiCorp/Terraform/Workspace Variables/Create a Variable
-    name: create_var_ansible_location
+    name: create_var_ansible_app_name
     inputs:
       - name: authKey
         value: $AuthOverride_1.result
@@ -320,8 +321,8 @@ blocks:
                   "type": "vars",
 
                   "attributes": {
-                      "key": "ansible_var_location",
-                      "value": $ansible_var_location,
+                      "key": "ansible_var_app_name",
+                      "value": $ansible_app_name,
                       "category": "terraform"
                   }
               }
@@ -562,14 +563,14 @@ variables:
     type:
       type: string
     value: '"22"'
-  - name: ansible_var_location
+  - name: cloud_provider
     required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
-    value: '"south"'
+    value: '"AWS"'
 meta:
   workerGroup: default
   description: "This workflow creates a Workspace in HCP Terraform, populates it with\
