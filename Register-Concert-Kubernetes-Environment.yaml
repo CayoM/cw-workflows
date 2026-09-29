@@ -3,28 +3,37 @@ platform: node
 blocks:
   # "Cannot index string with string 'id'" (the HTTP Request's response
   # coming back as a raw JSON string instead of a parsed object) happened
-  # TWICE, for two different reasons, both live-confirmed by reproducing
-  # the exact request with curl:
-  #   1. 2026-09-30 first pass: assumed (wrongly) it was "+" concatenation
-  #      inside a headers/body block, since no other flow in this repo does
-  #      that (only bare $var substitution is used there). Pre-computing
-  #      every concatenated string via assign below (the one proven pattern
-  #      for it - see HCP_Vault_Dedicated_Patch_Secret.yaml's $result
-  #      assign) is harmless and matches the codebase's own convention, so
-  #      it's kept, but it was NOT the actual bug - the identical error
-  #      still happened after this change.
-  #   2. 2026-09-30 second pass, the real cause: CreateConnection's body
-  #      sent cluster_name/namespaces under a made-up "other_fields" key.
-  #      Concert Core's strict JSON decoder rejects unknown fields with a
-  #      bare JSON STRING (not an object) as its error body - e.g.
-  #      "json: unknown field \"other_fields\"" - which is exactly what
-  #      breaks jq's ".id" filter downstream. cluster_name already belongs
-  #      on the ingestion job's details.parameters (see CreateIngestionJob
-  #      below), matching the already-working OCP connection in
-  #      concert_environment.yml - it was never a connection-body field to
-  #      begin with. Removed from here; connectionsFields vs otherFields in
-  #      Concert's frontend bundle (where this was sourced from) is only UI
-  #      form-section grouping, not two separate API payload keys.
+  # FOUR times in a row, for four different reasons, all live-confirmed by
+  # reproducing the exact request/flow logic:
+  #   1. Assumed (wrongly) it was "+" concatenation inside a headers/body
+  #      block. Harmless to keep (matches this repo's own convention: only
+  #      bare $var substitution is used inside headers/body elsewhere), but
+  #      not the actual bug.
+  #   2. CreateConnection's body sent cluster_name/namespaces under a made-up
+  #      "other_fields" key Concert Core's decoder rejects (with a bare JSON
+  #      string, not an object, as the error body - which is what broke jq
+  #      downstream each time). cluster_name belongs on the ingestion job's
+  #      details.parameters instead, matching the working OCP connection in
+  #      concert_environment.yml.
+  #   3. CreateEnvironment's "tags" was a plain string array; Concert Core
+  #      wants a different type (openapi.EntityTags, shape unverified) -
+  #      matched the working OCP environment, which just sends tags: [].
+  #   4. THE STRUCTURAL BUG (this pass): the jq action that extracts an id
+  #      was named the same as the flow variable meant to hold that id
+  #      (e.g. action "connection_id" vs variable $connection_id). Every
+  #      later reference to the bare $connection_id/$environment_id then
+  #      resolved to the ACTION's own output object ({result: "<uuid>"}),
+  #      not the plain id string - so e.g. CreateIngestionJob's
+  #      "credentials_id": $connection_id sent the whole object where a
+  #      string was expected, hitting the identical decoder-rejects-with-a-
+  #      bare-string failure one step further down the chain each time
+  #      (connection_id -> environment_id -> ingestion_job_id, in that
+  #      order, matching the three error reports received in order).
+  #      Fixed by renaming every extraction node to extract_* and always
+  #      explicitly assign-ing the plain-string flow variable from
+  #      $extract_*.result, in both the "just created" and "already
+  #      existed" paths, so the bare $connection_id/$environment_id/
+  #      $ingestion_job_id used everywhere below is unambiguous.
   - action: assign
     name: build_auth_header
     variable: $auth_header
@@ -68,15 +77,19 @@ blocks:
               ]
           }
   - action: system/Common/JSON/jq
-    name: connection_id
+    name: extract_connection_id
     inputs:
       - name: JSON
         value: $CreateConnection.result
       - name: Filter
         value: '".id // empty"'
+  - action: assign
+    name: set_connection_id_from_create
+    variable: $connection_id
+    value: $extract_connection_id.result
   - action: if
     name: connection_already_existed
-    condition: $connection_id.result == "" || $connection_id.result == null
+    condition: $connection_id == "" || $connection_id == null
     then:
       - action: system/Common/HTTP/HTTP Request
         name: ListConnections
@@ -92,26 +105,17 @@ blocks:
                   "Authorization": $auth_header
               }
       - action: system/Common/JSON/jq
-        name: existing_connection_id
+        name: extract_existing_connection_id
         inputs:
           - name: JSON
             value: $ListConnections.result
           - name: Filter
             value: '".credentials[] | select(.name==\"" + $connection_name + "\") | .id"'
       - action: assign
-        name: assign_connection_id
+        name: set_connection_id_from_lookup
         variable: $connection_id
-        value: $existing_connection_id.result
+        value: $extract_existing_connection_id.result
     else: []
-  # CORRECTION 2026-09-30 (3rd live bug, same failure signature as the
-  # other_fields one above): "tags" was [$instance_name, $app_name,
-  # $cloud_provider] (a plain string array), which Concert Core's decoder
-  # rejects - "json: cannot unmarshal string into Go struct field
-  # EnvironmentPrototype.tags of type openapi.EntityTags" (again a bare
-  # string body, not an object, breaking jq's ".id" downstream). Its real
-  # shape is unknown/unverified; the already-working OCP environment
-  # (concert_environment.yml) just sends an empty array, so this does too
-  # rather than guessing the EntityTags structure for a non-essential field.
   - action: system/Common/HTTP/HTTP Request
     name: CreateEnvironment
     inputs:
@@ -136,15 +140,19 @@ blocks:
               "purpose": "Demo"
           }
   - action: system/Common/JSON/jq
-    name: environment_id
+    name: extract_environment_id
     inputs:
       - name: JSON
         value: $CreateEnvironment.result
       - name: Filter
         value: '".id // empty"'
+  - action: assign
+    name: set_environment_id_from_create
+    variable: $environment_id
+    value: $extract_environment_id.result
   - action: if
     name: environment_already_existed
-    condition: $environment_id.result == "" || $environment_id.result == null
+    condition: $environment_id == "" || $environment_id == null
     then:
       - action: system/Common/HTTP/HTTP Request
         name: ListEnvironments
@@ -160,16 +168,16 @@ blocks:
                   "Authorization": $auth_header
               }
       - action: system/Common/JSON/jq
-        name: existing_environment_id
+        name: extract_existing_environment_id
         inputs:
           - name: JSON
             value: $ListEnvironments.result
           - name: Filter
             value: '".environments[] | select(.name==\"" + $environment_name + "\") | .id"'
       - action: assign
-        name: assign_environment_id
+        name: set_environment_id_from_lookup
         variable: $environment_id
-        value: $existing_environment_id.result
+        value: $extract_existing_environment_id.result
     else: []
   - action: system/Common/HTTP/HTTP Request
     name: CreateIngestionJob
@@ -202,15 +210,19 @@ blocks:
               }
           }
   - action: system/Common/JSON/jq
-    name: ingestion_job_id
+    name: extract_ingestion_job_id
     inputs:
       - name: JSON
         value: $CreateIngestionJob.result
       - name: Filter
         value: '".id // empty"'
+  - action: assign
+    name: set_ingestion_job_id
+    variable: $ingestion_job_id
+    value: $extract_ingestion_job_id.result
   - action: if
     name: has_new_ingestion_job
-    condition: $ingestion_job_id.result != "" && $ingestion_job_id.result != null
+    condition: $ingestion_job_id != "" && $ingestion_job_id != null
     then:
       - action: system/Common/HTTP/HTTP Request
         name: TriggerCollection
@@ -229,7 +241,7 @@ blocks:
           - name: body
             value: |-
               {
-                  "job_id": $ingestion_job_id.result
+                  "job_id": $ingestion_job_id
               }
     else: []
   - action: assign
@@ -239,7 +251,7 @@ blocks:
       {
           "connection_id": $connection_id,
           "environment_id": $environment_id,
-          "ingestion_job_id": $ingestion_job_id.result
+          "ingestion_job_id": $ingestion_job_id
       }
 variables:
   - name: result
@@ -323,13 +335,12 @@ variables:
       type: string
     value: '""'
   # connection_name/environment_name have no expression default on purpose -
-  # CORRECTION 2026-09-30: a default of $instance_name + " (Kubernetes)" broke
-  # with "$instance_name is not defined" the first time this actually ran
-  # (live-confirmed against Concert Workflows). Variable defaults are
-  # evaluated before input bindings, so they can't reference another
-  # variable - every other flow in this repo only uses static-literal
-  # defaults, which is the pattern to follow. The caller now computes and
-  # passes both explicitly (see End-to-End-Automation.yaml).
+  # a default of $instance_name + " (Kubernetes)" broke with "$instance_name
+  # is not defined" the first time this actually ran (live-confirmed).
+  # Variable defaults are evaluated before input bindings, so they can't
+  # reference another variable - every other flow in this repo only uses
+  # static-literal defaults, which is the pattern to follow. The caller
+  # computes and passes both explicitly (see End-to-End-Automation.yaml).
   - name: connection_name
     required: true
     isInput: true
@@ -346,13 +357,16 @@ variables:
     type:
       type: string
     value: '""'
+  # These three hold plain id strings, explicitly assign-ed from the
+  # extract_*.result of their matching jq node (never read bare off a
+  # same-named action - see the CORRECTION at the top of this file for why).
   - name: connection_id
     required: false
     isInput: false
     isOutput: false
     level: INTERMEDIATE
     type:
-      type: any
+      type: string
     value: '""'
   - name: environment_id
     required: false
@@ -360,7 +374,15 @@ variables:
     isOutput: false
     level: INTERMEDIATE
     type:
-      type: any
+      type: string
+    value: '""'
+  - name: ingestion_job_id
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
     value: '""'
   - name: auth_header
     required: false
@@ -401,13 +423,10 @@ meta:
     Concert (connection + environment + ingestion job + trigger collection),
     reusing the connector type/field shape confirmed live for Concert
     3.0.1.1's OCP environment registration (roles/concert_platform/tasks/
-    concert_environment.yml in the optimized-solution repo) - the
-    "kubernetes" connector was confirmed to exist with the same
-    endpoint/token/cluster_name fields by extracting it from Concert Core's
-    compiled frontend bundle on 2026-09-29. Two real bugs were found and
-    fixed only by actually running this end to end (see CORRECTION notes
-    above and in the variables block) - re-test after any further edit
-    before relying on it for a demo.
+    concert_environment.yml in the optimized-solution repo). Four real bugs
+    were found and fixed only by actually running this end to end (see the
+    CORRECTION note at the top of the blocks list) - re-test after any
+    further edit before relying on it for a demo.
     server_validation_enabled is hardcoded to false (self-signed k3s API
     server cert on the ephemeral VM), matching validate_certs:false used
     elsewhere in this project for the same class of target.
