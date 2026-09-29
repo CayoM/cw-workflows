@@ -243,6 +243,10 @@ blocks:
             value: $aap_job_data
           - name: AAP_AUTH
             value: $AAP_Auth.result
+      - action: assign
+        name: Assign_aap_artifacts_1
+        variable: $aap_artifacts
+        value: $Configure_with_ansible_1.output
     else:
       - action: ./AAP-watch-job-by-name
         name: User_5
@@ -253,6 +257,10 @@ blocks:
             value: $AAP_Auth.result
           - name: instance_name
             value: $instance_name
+      - action: assign
+        name: Assign_aap_artifacts_2
+        variable: $aap_artifacts
+        value: $User_5.output
       - action: ./AAP-run-job-by-name
         name: Configure_with_ansible
         inputs:
@@ -263,6 +271,58 @@ blocks:
           - name: AAP_AUTH
             value: $AAP_Auth.result
         skipped: true
+  # Register the RIA VM's k3s cluster as a Kubernetes environment in Concert.
+  # $aap_artifacts.{k3s_endpoint,k3s_token,cluster_name} come from ria-demo's
+  # setup_k3s.yaml ("Publish Concert environment registration data as job
+  # artifacts") via the AWX job's artifacts, which both branches above expose
+  # through $Configure_with_ansible_1.output / $User_5.output. concert_core_url
+  # and concert_api_key are synced into this same Vault secret store by
+  # optimized-solution's post_config.yml (--tags post_config), so nothing here
+  # is hand-entered. Requires the ria-demo role to actually have run
+  # setup_k3s.yaml - skipped otherwise (empty k3s_token).
+  # RE-ENABLED 2026-09-30 for a real end-to-end test run, at the user's
+  # explicit request (was disabled the same day, right after being built,
+  # because none of this had ever run against a live RIA VM yet - see git
+  # history for the original DISABLED note). Test with a real provisioning
+  # run before relying on this for a demo.
+  - action: if
+    name: has_k3s_token
+    condition: $aap_artifacts.k3s_token != null && $aap_artifacts.k3s_token != ""
+    then:
+      - action: ./HCP_Vault_Dedicated_Get_Secret
+        name: get_concert_core_url
+        inputs:
+          - name: secret_name
+            value: '"concert_core_url"'
+          - name: HCP_AUTH_SECRET
+            value: $vault_auth
+      - action: ./HCP_Vault_Dedicated_Get_Secret
+        name: get_concert_api_key
+        inputs:
+          - name: secret_name
+            value: '"concert_api_key"'
+          - name: HCP_AUTH_SECRET
+            value: $vault_auth
+      - action: ./Register-Concert-Kubernetes-Environment
+        name: Register_Concert_Environment
+        inputs:
+          - name: concert_core_url
+            value: $get_concert_core_url.result
+          - name: concert_api_key
+            value: $get_concert_api_key.result
+          - name: instance_name
+            value: $instance_name
+          - name: app_name
+            value: $app_name
+          - name: cloud_provider
+            value: $cloud_provider
+          - name: k3s_endpoint
+            value: $aap_artifacts.k3s_endpoint
+          - name: k3s_token
+            value: $aap_artifacts.k3s_token
+          - name: cluster_name
+            value: $aap_artifacts.cluster_name
+    else: []
   - action: if
     name: If_2
     condition: $instance_type == "5G" || $instance_type == "On Premise"
@@ -361,6 +421,14 @@ variables:
       type: string
     value: '""'
   - name: aap_job_data
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: object
+    value: "{}"
+  - name: aap_artifacts
     required: false
     isInput: false
     isOutput: false

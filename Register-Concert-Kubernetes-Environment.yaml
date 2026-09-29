@@ -1,0 +1,330 @@
+name: Register-Concert-Kubernetes-Environment
+platform: node
+blocks:
+  - action: system/Common/HTTP/HTTP Request
+    name: CreateConnection
+    inputs:
+      - name: method
+        value: '"POST"'
+      - name: host
+        value: $concert_core_url + "/concert/core/api/v1/credentials"
+      - name: headers
+        value: |-
+          {
+              "Content-Type": "application/json",
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": "C_API_KEY " + $concert_api_key
+          }
+      - name: body
+        value: |-
+          {
+              "name": $connection_name,
+              "description": "Registered by Concert Workflows (" + $instance_name + ")",
+              "type": "kubernetes",
+              "credentials": [
+                  { "key": "endpoint", "value": $k3s_endpoint },
+                  { "key": "server_validation_enabled", "value": "false" },
+                  { "key": "token", "value": $k3s_token }
+              ],
+              "other_fields": [
+                  { "key": "cluster_name", "value": $cluster_name },
+                  { "key": "namespaces", "value": $namespaces }
+              ]
+          }
+  - action: system/Common/JSON/jq
+    name: connection_id
+    inputs:
+      - name: JSON
+        value: $CreateConnection.result
+      - name: Filter
+        value: '".id // empty"'
+  - action: if
+    name: connection_already_existed
+    condition: $connection_id.result == "" || $connection_id.result == null
+    then:
+      - action: system/Common/HTTP/HTTP Request
+        name: ListConnections
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: $concert_core_url + "/concert/core/api/v1/credentials"
+          - name: headers
+            value: |-
+              {
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": "C_API_KEY " + $concert_api_key
+              }
+      - action: system/Common/JSON/jq
+        name: existing_connection_id
+        inputs:
+          - name: JSON
+            value: $ListConnections.result
+          - name: Filter
+            value: '".credentials[] | select(.name==\"" + $connection_name + "\") | .id"'
+      - action: assign
+        name: assign_connection_id
+        variable: $connection_id
+        value: $existing_connection_id.result
+    else: []
+  - action: system/Common/HTTP/HTTP Request
+    name: CreateEnvironment
+    inputs:
+      - name: method
+        value: '"POST"'
+      - name: host
+        value: $concert_core_url + "/concert/core/api/v1/environments"
+      - name: headers
+        value: |-
+          {
+              "Content-Type": "application/json",
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": "C_API_KEY " + $concert_api_key
+          }
+      - name: body
+        value: |-
+          {
+              "name": $environment_name,
+              "description": "RIA demo environment (" + $instance_name + " / " + $app_name + ")",
+              "tags": [$instance_name, $app_name, $cloud_provider],
+              "type": "kubernetes",
+              "purpose": "Demo"
+          }
+  - action: system/Common/JSON/jq
+    name: environment_id
+    inputs:
+      - name: JSON
+        value: $CreateEnvironment.result
+      - name: Filter
+        value: '".id // empty"'
+  - action: if
+    name: environment_already_existed
+    condition: $environment_id.result == "" || $environment_id.result == null
+    then:
+      - action: system/Common/HTTP/HTTP Request
+        name: ListEnvironments
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: $concert_core_url + "/concert/core/api/v1/environments"
+          - name: headers
+            value: |-
+              {
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": "C_API_KEY " + $concert_api_key
+              }
+      - action: system/Common/JSON/jq
+        name: existing_environment_id
+        inputs:
+          - name: JSON
+            value: $ListEnvironments.result
+          - name: Filter
+            value: '".environments[] | select(.name==\"" + $environment_name + "\") | .id"'
+      - action: assign
+        name: assign_environment_id
+        variable: $environment_id
+        value: $existing_environment_id.result
+    else: []
+  - action: system/Common/HTTP/HTTP Request
+    name: CreateIngestionJob
+    inputs:
+      - name: method
+        value: '"POST"'
+      - name: host
+        value: $concert_core_url + "/concert/core/api/v1/ingestion_jobs"
+      - name: headers
+        value: |-
+          {
+              "Content-Type": "application/json",
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": "C_API_KEY " + $concert_api_key
+          }
+      - name: body
+        value: |-
+          {
+              "name": $connection_name + " data collection",
+              "description": "Kubernetes environment discovery (managed by Concert Workflows)",
+              "type": "kubernetes",
+              "credentials_id": $connection_id,
+              "scheduled": 0,
+              "enabled": "enabled",
+              "details": {
+                  "parameters": [
+                      { "key": "environment_id", "value": $environment_id },
+                      { "key": "cluster_name", "value": $cluster_name }
+                  ]
+              }
+          }
+  - action: system/Common/JSON/jq
+    name: ingestion_job_id
+    inputs:
+      - name: JSON
+        value: $CreateIngestionJob.result
+      - name: Filter
+        value: '".id // empty"'
+  - action: if
+    name: has_new_ingestion_job
+    condition: $ingestion_job_id.result != "" && $ingestion_job_id.result != null
+    then:
+      - action: system/Common/HTTP/HTTP Request
+        name: TriggerCollection
+        inputs:
+          - name: method
+            value: '"POST"'
+          - name: host
+            value: $concert_core_url + "/concert/ingestion/api/v1/collect_data"
+          - name: headers
+            value: |-
+              {
+                  "Content-Type": "application/json",
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": "C_API_KEY " + $concert_api_key
+              }
+          - name: body
+            value: |-
+              {
+                  "job_id": $ingestion_job_id.result
+              }
+    else: []
+  - action: assign
+    name: Assign_result
+    variable: $result
+    value: |-
+      {
+          "connection_id": $connection_id,
+          "environment_id": $environment_id,
+          "ingestion_job_id": $ingestion_job_id.result
+      }
+variables:
+  - name: result
+    required: false
+    isInput: false
+    isOutput: true
+    level: INTERMEDIATE
+    type:
+      type: object
+    value: "{}"
+  - name: concert_core_url
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"https://concert-external-concert.apps.itz-gpm8cz.infra01-lb.lon04.techzone.ibm.com"'
+  - name: concert_api_key
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: instance_name
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: app_name
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: cloud_provider
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: k3s_endpoint
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: k3s_token
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: cluster_name
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: $instance_name
+  - name: namespaces
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: connection_name
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: $instance_name + " (Kubernetes)"
+  - name: environment_name
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: $instance_name + " (Kubernetes)"
+  - name: connection_id
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: any
+    value: '""'
+  - name: environment_id
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: any
+    value: '""'
+meta:
+  version: 5
+  description: >-
+    Register a RIA-provisioned k3s cluster as a Kubernetes environment in
+    Concert (connection + environment + ingestion job + trigger collection),
+    reusing the connector type/field shape confirmed live for Concert
+    3.0.1.1's OCP environment registration (roles/concert_platform/tasks/
+    concert_environment.yml in the optimized-solution repo) - the
+    "kubernetes" connector was confirmed to exist with the same
+    endpoint/token/cluster_name fields by extracting it from Concert Core's
+    compiled frontend bundle on 2026-09-29, but this workflow itself has NOT
+    been run against a live k3s endpoint yet (no RIA VM was up to test
+    against) - test with a real endpoint/token before relying on it.
+    server_validation_enabled is hardcoded to false (self-signed k3s API
+    server cert on the ephemeral VM), matching validate_certs:false used
+    elsewhere in this project for the same class of target.
+  layout: flow
+  workerGroup: default
+finally: null
