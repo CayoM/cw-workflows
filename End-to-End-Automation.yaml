@@ -322,6 +322,10 @@ blocks:
             value: $aap_artifacts.k3s_token
           - name: cluster_name
             value: $aap_artifacts.cluster_name
+          - name: connection_name
+            value: $instance_name + " (Kubernetes)"
+          - name: environment_name
+            value: $instance_name + " (Kubernetes)"
     else: []
   - action: if
     name: If_2

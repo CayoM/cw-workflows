@@ -268,7 +268,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: $instance_name
+    value: '""'
   - name: namespaces
     required: false
     isInput: true
@@ -277,22 +277,30 @@ variables:
     type:
       type: string
     value: '""'
+  # connection_name/environment_name have no expression default on purpose -
+  # CORRECTION 2026-09-30: a default of $instance_name + " (Kubernetes)" broke
+  # with "$instance_name is not defined" the first time this actually ran
+  # (live-confirmed against Concert Workflows). Variable defaults are
+  # evaluated before input bindings, so they can't reference another
+  # variable - every other flow in this repo only uses static-literal
+  # defaults, which is the pattern to follow. The caller now computes and
+  # passes both explicitly (see End-to-End-Automation.yaml).
   - name: connection_name
-    required: false
+    required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
-    value: $instance_name + " (Kubernetes)"
+    value: '""'
   - name: environment_name
-    required: false
+    required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
-    value: $instance_name + " (Kubernetes)"
+    value: '""'
   - name: connection_id
     required: false
     isInput: false
