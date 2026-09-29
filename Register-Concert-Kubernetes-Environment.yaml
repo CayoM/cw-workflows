@@ -262,6 +262,15 @@ variables:
     type:
       type: object
     value: "{}"
+  # No hardcoded cluster URL as a default on purpose - this flow is only ever
+  # meant to run with concert_core_url supplied by the caller (End-to-End-
+  # Automation.yaml fetches it from HCP Vault via HCP_Vault_Dedicated_Get_Secret,
+  # kept current there by optimized-solution's post_config.yml on every
+  # install/reinstall - see that task's Vault sync). A stale hardcoded
+  # cluster URL here would silently point at the wrong cluster the moment a
+  # new one is provisioned, especially if this flow is ever run standalone
+  # from Concert Workflows Studio without overriding it. Empty default
+  # matches concert_api_key just below, which never had this problem.
   - name: concert_core_url
     required: true
     isInput: true
@@ -269,7 +278,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"https://concert-external-concert.apps.itz-gpm8cz.infra01-lb.lon04.techzone.ibm.com"'
+    value: '""'
   - name: concert_api_key
     required: true
     isInput: true
