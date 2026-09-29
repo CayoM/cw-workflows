@@ -1,18 +1,30 @@
 name: Register-Concert-Kubernetes-Environment
 platform: node
 blocks:
-  # CORRECTION 2026-09-30: every string built with "+" directly inside a
-  # headers/body block below broke live with "Cannot index string with
-  # string 'id'" - the HTTP Request's response came back as a raw string,
-  # not parsed JSON, meaning the request itself was malformed. No proven
-  # flow in this repo concatenates with "+" inside a headers/body object
-  # literal (only bare $var substitution is used there, e.g. End-to-End-
-  # Automation.yaml's aap_job_data "extra_vars" object); "+" concatenation
-  # is only ever used in plain string fields (host, jq Filter, assign). So
-  # every concatenated string needed by headers/body is now pre-computed
-  # here via assign (the one proven pattern for it - see
-  # HCP_Vault_Dedicated_Patch_Secret.yaml's $result assign) and referenced
-  # as a bare $var below.
+  # "Cannot index string with string 'id'" (the HTTP Request's response
+  # coming back as a raw JSON string instead of a parsed object) happened
+  # TWICE, for two different reasons, both live-confirmed by reproducing
+  # the exact request with curl:
+  #   1. 2026-09-30 first pass: assumed (wrongly) it was "+" concatenation
+  #      inside a headers/body block, since no other flow in this repo does
+  #      that (only bare $var substitution is used there). Pre-computing
+  #      every concatenated string via assign below (the one proven pattern
+  #      for it - see HCP_Vault_Dedicated_Patch_Secret.yaml's $result
+  #      assign) is harmless and matches the codebase's own convention, so
+  #      it's kept, but it was NOT the actual bug - the identical error
+  #      still happened after this change.
+  #   2. 2026-09-30 second pass, the real cause: CreateConnection's body
+  #      sent cluster_name/namespaces under a made-up "other_fields" key.
+  #      Concert Core's strict JSON decoder rejects unknown fields with a
+  #      bare JSON STRING (not an object) as its error body - e.g.
+  #      "json: unknown field \"other_fields\"" - which is exactly what
+  #      breaks jq's ".id" filter downstream. cluster_name already belongs
+  #      on the ingestion job's details.parameters (see CreateIngestionJob
+  #      below), matching the already-working OCP connection in
+  #      concert_environment.yml - it was never a connection-body field to
+  #      begin with. Removed from here; connectionsFields vs otherFields in
+  #      Concert's frontend bundle (where this was sourced from) is only UI
+  #      form-section grouping, not two separate API payload keys.
   - action: assign
     name: build_auth_header
     variable: $auth_header
@@ -53,10 +65,6 @@ blocks:
                   { "key": "endpoint", "value": $k3s_endpoint },
                   { "key": "server_validation_enabled", "value": "false" },
                   { "key": "token", "value": $k3s_token }
-              ],
-              "other_fields": [
-                  { "key": "cluster_name", "value": $cluster_name },
-                  { "key": "namespaces", "value": $namespaces }
               ]
           }
   - action: system/Common/JSON/jq
