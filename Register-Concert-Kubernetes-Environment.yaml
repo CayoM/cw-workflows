@@ -35,26 +35,35 @@ blocks:
   #      existed" paths, so the bare $connection_id/$environment_id/
   #      $ingestion_job_id used everywhere below is unambiguous.
   #
-  # SEPARATE ISSUE (not one of the four above - job runs SUCCESS/202, no
-  # error surfaces in the Workflow at all): the "kubernetes" connector type's
-  # own SBOM-generation step always logged "kubernetes application name: "
-  # empty and failed internally with "deployment name cannot be empty"
-  # (visible only in Concert's roja-ingestion pod logs) - live-confirmed
-  # across every single run, including ones where app_name/app_version were
-  # added to details.parameters (that "fix" was a false positive: job status
-  # happened to flip to SUCCESS on an unrelated run, the SBOM log line stayed
-  # empty regardless - retracted). Concert's own frontend bundle confirms the
-  # "kubernetes" connector's UI has no application-name field at all, so
-  # there was never a parameter to set here in the first place - this looks
-  # like a genuine gap in that specific connector type on Concert 3.0.1.1,
-  # not something this repo can configure around. CURRENTLY TESTING (2026-09-
-  # 30, at the user's request): registering the k3s cluster with type "ocp"
-  # instead of "kubernetes" - same connectionsFields/otherFields shape per
-  # the frontend bundle, and OCP's own connector (concert_environment.yml)
-  # never had this SBOM problem. A plain Kubernetes API server should be
-  # compatible with the OCP connector's API calls since OCP's API is a
-  # superset of vanilla Kubernetes. Re-test needed to confirm; if it doesn't
-  # help, revert "ocp" back to "kubernetes" below (3 occurrences).
+  # KNOWN LIMITATION, NOT FIXED (not one of the four bugs above - the job
+  # itself runs SUCCESS/202, no error surfaces in the Workflow at all): the
+  # SBOM-generation step in Concert's roja-ingestion always logs "kubernetes
+  # application name: " empty and fails internally with "deployment name
+  # cannot be empty" (visible only in Concert's own pod logs). Live-confirmed
+  # this is NOT about the "type" field: tried type "kubernetes" (original),
+  # then type "ocp" (same connectionsFields/otherFields shape per Concert's
+  # frontend bundle) - byte-for-byte identical error and stack trace both
+  # times, from the same handler (collectorProcessKubernetes), meaning both
+  # connector "types" share this exact code path. Also tried adding
+  # app_name/app_version to details.parameters - no effect either (that
+  # earlier "fix" was a false positive from misreading an unrelated status
+  # change; retracted). Concert's frontend bundle confirms neither connector
+  # type even exposes an application-name field in its own UI.
+  #
+  # Best working theory: this SBOM step derives the application name/version
+  # from something that only exists on an actual OpenShift cluster with
+  # Operator-installed software (e.g. OLM ClusterServiceVersion objects,
+  # which Concert/Turbonomic/AWX all have from their own operator installs)
+  # - a plain Kubernetes cluster like k3s never has that, regardless of which
+  # connector "type" string is used to register it. If true, this is a
+  # genuine Concert 3.0.1.1 product limitation for generic Kubernetes
+  # environments, not something fixable via this workflow's parameters.
+  #
+  # Net effect: the Environment + Connection this flow creates are real and
+  # correct (host count populates), but the Environment's own deployment/
+  # topology aggregate will most likely stay empty for a plain k3s cluster.
+  # Reverted to type "kubernetes" (the semantically correct value for what
+  # this actually is, and the switch to "ocp" bought nothing).
   - action: assign
     name: build_auth_header
     variable: $auth_header
@@ -90,7 +99,7 @@ blocks:
           {
               "name": $connection_name,
               "description": $connection_description,
-              "type": "ocp",
+              "type": "kubernetes",
               "credentials": [
                   { "key": "endpoint", "value": $k3s_endpoint },
                   { "key": "server_validation_enabled", "value": "false" },
@@ -157,7 +166,7 @@ blocks:
               "name": $environment_name,
               "description": $environment_description,
               "tags": [],
-              "type": "ocp",
+              "type": "kubernetes",
               "purpose": "Demo"
           }
   - action: system/Common/JSON/jq
@@ -219,7 +228,7 @@ blocks:
           {
               "name": $ingestion_job_name,
               "description": "Kubernetes environment discovery (managed by Concert Workflows)",
-              "type": "ocp",
+              "type": "kubernetes",
               "credentials_id": $connection_id,
               "scheduled": 0,
               "enabled": "enabled",
@@ -453,12 +462,15 @@ meta:
     Concert (connection + environment + ingestion job + trigger collection),
     reusing the connector type/field shape confirmed live for Concert
     3.0.1.1's OCP environment registration (roles/concert_platform/tasks/
-    concert_environment.yml in the optimized-solution repo) - currently
-    registering as connector type "ocp" rather than "kubernetes" (see the
-    SEPARATE ISSUE note at the top of the blocks list for why). Several real
+    concert_environment.yml in the optimized-solution repo). Several real
     bugs were found and fixed only by actually running this end to end (see
     the notes at the top of the blocks list) - re-test after any further
-    edit before relying on it for a demo.
+    edit before relying on it for a demo. KNOWN LIMITATION (see the notes
+    at the top of the blocks list): the Environment's own deployment/
+    topology aggregate most likely stays empty for a plain Kubernetes
+    cluster - looks like a genuine Concert 3.0.1.1 product gap, not
+    something fixable from here. The Environment + Connection themselves
+    are still created correctly.
     server_validation_enabled is hardcoded to false (self-signed k3s API
     server cert on the ephemeral VM), matching validate_certs:false used
     elsewhere in this project for the same class of target.
