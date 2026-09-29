@@ -103,6 +103,15 @@ blocks:
         variable: $connection_id
         value: $existing_connection_id.result
     else: []
+  # CORRECTION 2026-09-30 (3rd live bug, same failure signature as the
+  # other_fields one above): "tags" was [$instance_name, $app_name,
+  # $cloud_provider] (a plain string array), which Concert Core's decoder
+  # rejects - "json: cannot unmarshal string into Go struct field
+  # EnvironmentPrototype.tags of type openapi.EntityTags" (again a bare
+  # string body, not an object, breaking jq's ".id" downstream). Its real
+  # shape is unknown/unverified; the already-working OCP environment
+  # (concert_environment.yml) just sends an empty array, so this does too
+  # rather than guessing the EntityTags structure for a non-essential field.
   - action: system/Common/HTTP/HTTP Request
     name: CreateEnvironment
     inputs:
@@ -122,7 +131,7 @@ blocks:
           {
               "name": $environment_name,
               "description": $environment_description,
-              "tags": [$instance_name, $app_name, $cloud_provider],
+              "tags": [],
               "type": "kubernetes",
               "purpose": "Demo"
           }
