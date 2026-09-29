@@ -205,7 +205,9 @@ blocks:
               "details": {
                   "parameters": [
                       { "key": "environment_id", "value": $environment_id },
-                      { "key": "cluster_name", "value": $cluster_name }
+                      { "key": "cluster_name", "value": $cluster_name },
+                      { "key": "app_name", "value": $app_name },
+                      { "key": "app_version", "value": $app_version }
                   ]
               }
           }
@@ -303,6 +305,24 @@ variables:
     type:
       type: string
     value: '""'
+  # Live-confirmed 2026-09-30: without app_name/app_version in the ingestion
+  # job's details.parameters, the "kubernetes" connector's SBOM generation
+  # step logs "kubernetes application name: " (empty) and fails with
+  # "deployment name cannot be empty", leaving the job status ERROR - the
+  # scan itself still ran (fetched real data, e.g. 24 Deployments in one
+  # test), it just never got persisted. Adding both turned the same run
+  # SUCCESS. The already-working OCP connector (concert_environment.yml)
+  # doesn't need this - a difference in the two connectors' backend code,
+  # not something this repo controls. app_version has no natural source
+  # here (ria-ansible doesn't track one); static placeholder.
+  - name: app_version
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"1.0.0"'
   - name: cloud_provider
     required: false
     isInput: true
