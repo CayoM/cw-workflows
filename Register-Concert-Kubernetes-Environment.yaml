@@ -1,6 +1,34 @@
 name: Register-Concert-Kubernetes-Environment
 platform: node
 blocks:
+  # CORRECTION 2026-09-30: every string built with "+" directly inside a
+  # headers/body block below broke live with "Cannot index string with
+  # string 'id'" - the HTTP Request's response came back as a raw string,
+  # not parsed JSON, meaning the request itself was malformed. No proven
+  # flow in this repo concatenates with "+" inside a headers/body object
+  # literal (only bare $var substitution is used there, e.g. End-to-End-
+  # Automation.yaml's aap_job_data "extra_vars" object); "+" concatenation
+  # is only ever used in plain string fields (host, jq Filter, assign). So
+  # every concatenated string needed by headers/body is now pre-computed
+  # here via assign (the one proven pattern for it - see
+  # HCP_Vault_Dedicated_Patch_Secret.yaml's $result assign) and referenced
+  # as a bare $var below.
+  - action: assign
+    name: build_auth_header
+    variable: $auth_header
+    value: '"C_API_KEY " + $concert_api_key'
+  - action: assign
+    name: build_connection_description
+    variable: $connection_description
+    value: '"Registered by Concert Workflows (" + $instance_name + ")"'
+  - action: assign
+    name: build_environment_description
+    variable: $environment_description
+    value: '"RIA demo environment (" + $instance_name + " / " + $app_name + ")"'
+  - action: assign
+    name: build_ingestion_job_name
+    variable: $ingestion_job_name
+    value: '$connection_name + " data collection"'
   - action: system/Common/HTTP/HTTP Request
     name: CreateConnection
     inputs:
@@ -13,13 +41,13 @@ blocks:
           {
               "Content-Type": "application/json",
               "InstanceId": "0000-0000-0000-0000",
-              "Authorization": "C_API_KEY " + $concert_api_key
+              "Authorization": $auth_header
           }
       - name: body
         value: |-
           {
               "name": $connection_name,
-              "description": "Registered by Concert Workflows (" + $instance_name + ")",
+              "description": $connection_description,
               "type": "kubernetes",
               "credentials": [
                   { "key": "endpoint", "value": $k3s_endpoint },
@@ -53,7 +81,7 @@ blocks:
             value: |-
               {
                   "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": "C_API_KEY " + $concert_api_key
+                  "Authorization": $auth_header
               }
       - action: system/Common/JSON/jq
         name: existing_connection_id
@@ -79,13 +107,13 @@ blocks:
           {
               "Content-Type": "application/json",
               "InstanceId": "0000-0000-0000-0000",
-              "Authorization": "C_API_KEY " + $concert_api_key
+              "Authorization": $auth_header
           }
       - name: body
         value: |-
           {
               "name": $environment_name,
-              "description": "RIA demo environment (" + $instance_name + " / " + $app_name + ")",
+              "description": $environment_description,
               "tags": [$instance_name, $app_name, $cloud_provider],
               "type": "kubernetes",
               "purpose": "Demo"
@@ -112,7 +140,7 @@ blocks:
             value: |-
               {
                   "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": "C_API_KEY " + $concert_api_key
+                  "Authorization": $auth_header
               }
       - action: system/Common/JSON/jq
         name: existing_environment_id
@@ -138,12 +166,12 @@ blocks:
           {
               "Content-Type": "application/json",
               "InstanceId": "0000-0000-0000-0000",
-              "Authorization": "C_API_KEY " + $concert_api_key
+              "Authorization": $auth_header
           }
       - name: body
         value: |-
           {
-              "name": $connection_name + " data collection",
+              "name": $ingestion_job_name,
               "description": "Kubernetes environment discovery (managed by Concert Workflows)",
               "type": "kubernetes",
               "credentials_id": $connection_id,
@@ -179,7 +207,7 @@ blocks:
               {
                   "Content-Type": "application/json",
                   "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": "C_API_KEY " + $concert_api_key
+                  "Authorization": $auth_header
               }
           - name: body
             value: |-
@@ -317,6 +345,38 @@ variables:
     type:
       type: any
     value: '""'
+  - name: auth_header
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: connection_description
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: environment_description
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: ingestion_job_name
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
 meta:
   version: 5
   description: >-
@@ -327,9 +387,10 @@ meta:
     concert_environment.yml in the optimized-solution repo) - the
     "kubernetes" connector was confirmed to exist with the same
     endpoint/token/cluster_name fields by extracting it from Concert Core's
-    compiled frontend bundle on 2026-09-29, but this workflow itself has NOT
-    been run against a live k3s endpoint yet (no RIA VM was up to test
-    against) - test with a real endpoint/token before relying on it.
+    compiled frontend bundle on 2026-09-29. Two real bugs were found and
+    fixed only by actually running this end to end (see CORRECTION notes
+    above and in the variables block) - re-test after any further edit
+    before relying on it for a demo.
     server_validation_enabled is hardcoded to false (self-signed k3s API
     server cert on the ephemeral VM), matching validate_certs:false used
     elsewhere in this project for the same class of target.
