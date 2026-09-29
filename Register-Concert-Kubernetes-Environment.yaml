@@ -34,6 +34,27 @@ blocks:
   #      $extract_*.result, in both the "just created" and "already
   #      existed" paths, so the bare $connection_id/$environment_id/
   #      $ingestion_job_id used everywhere below is unambiguous.
+  #
+  # SEPARATE ISSUE (not one of the four above - job runs SUCCESS/202, no
+  # error surfaces in the Workflow at all): the "kubernetes" connector type's
+  # own SBOM-generation step always logged "kubernetes application name: "
+  # empty and failed internally with "deployment name cannot be empty"
+  # (visible only in Concert's roja-ingestion pod logs) - live-confirmed
+  # across every single run, including ones where app_name/app_version were
+  # added to details.parameters (that "fix" was a false positive: job status
+  # happened to flip to SUCCESS on an unrelated run, the SBOM log line stayed
+  # empty regardless - retracted). Concert's own frontend bundle confirms the
+  # "kubernetes" connector's UI has no application-name field at all, so
+  # there was never a parameter to set here in the first place - this looks
+  # like a genuine gap in that specific connector type on Concert 3.0.1.1,
+  # not something this repo can configure around. CURRENTLY TESTING (2026-09-
+  # 30, at the user's request): registering the k3s cluster with type "ocp"
+  # instead of "kubernetes" - same connectionsFields/otherFields shape per
+  # the frontend bundle, and OCP's own connector (concert_environment.yml)
+  # never had this SBOM problem. A plain Kubernetes API server should be
+  # compatible with the OCP connector's API calls since OCP's API is a
+  # superset of vanilla Kubernetes. Re-test needed to confirm; if it doesn't
+  # help, revert "ocp" back to "kubernetes" below (3 occurrences).
   - action: assign
     name: build_auth_header
     variable: $auth_header
@@ -69,7 +90,7 @@ blocks:
           {
               "name": $connection_name,
               "description": $connection_description,
-              "type": "kubernetes",
+              "type": "ocp",
               "credentials": [
                   { "key": "endpoint", "value": $k3s_endpoint },
                   { "key": "server_validation_enabled", "value": "false" },
@@ -136,7 +157,7 @@ blocks:
               "name": $environment_name,
               "description": $environment_description,
               "tags": [],
-              "type": "kubernetes",
+              "type": "ocp",
               "purpose": "Demo"
           }
   - action: system/Common/JSON/jq
@@ -198,16 +219,14 @@ blocks:
           {
               "name": $ingestion_job_name,
               "description": "Kubernetes environment discovery (managed by Concert Workflows)",
-              "type": "kubernetes",
+              "type": "ocp",
               "credentials_id": $connection_id,
               "scheduled": 0,
               "enabled": "enabled",
               "details": {
                   "parameters": [
                       { "key": "environment_id", "value": $environment_id },
-                      { "key": "cluster_name", "value": $cluster_name },
-                      { "key": "app_name", "value": $app_name },
-                      { "key": "app_version", "value": $app_version }
+                      { "key": "cluster_name", "value": $cluster_name }
                   ]
               }
           }
@@ -305,24 +324,6 @@ variables:
     type:
       type: string
     value: '""'
-  # Live-confirmed 2026-09-30: without app_name/app_version in the ingestion
-  # job's details.parameters, the "kubernetes" connector's SBOM generation
-  # step logs "kubernetes application name: " (empty) and fails with
-  # "deployment name cannot be empty", leaving the job status ERROR - the
-  # scan itself still ran (fetched real data, e.g. 24 Deployments in one
-  # test), it just never got persisted. Adding both turned the same run
-  # SUCCESS. The already-working OCP connector (concert_environment.yml)
-  # doesn't need this - a difference in the two connectors' backend code,
-  # not something this repo controls. app_version has no natural source
-  # here (ria-ansible doesn't track one); static placeholder.
-  - name: app_version
-    required: false
-    isInput: false
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"1.0.0"'
   - name: cloud_provider
     required: false
     isInput: true
@@ -452,10 +453,12 @@ meta:
     Concert (connection + environment + ingestion job + trigger collection),
     reusing the connector type/field shape confirmed live for Concert
     3.0.1.1's OCP environment registration (roles/concert_platform/tasks/
-    concert_environment.yml in the optimized-solution repo). Four real bugs
-    were found and fixed only by actually running this end to end (see the
-    CORRECTION note at the top of the blocks list) - re-test after any
-    further edit before relying on it for a demo.
+    concert_environment.yml in the optimized-solution repo) - currently
+    registering as connector type "ocp" rather than "kubernetes" (see the
+    SEPARATE ISSUE note at the top of the blocks list for why). Several real
+    bugs were found and fixed only by actually running this end to end (see
+    the notes at the top of the blocks list) - re-test after any further
+    edit before relying on it for a demo.
     server_validation_enabled is hardcoded to false (self-signed k3s API
     server cert on the ephemeral VM), matching validate_certs:false used
     elsewhere in this project for the same class of target.
