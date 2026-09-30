@@ -76,6 +76,163 @@ blocks:
             value: $HashiCorp_4.result
             breakpoint: enabled
         else: []
+  # Concert reconcile: every Concert environment created by the demo is of
+  # type kubernetes and carries the description prefix "RIA demo environment" and is named after its
+  # deployment id = HCP workspace name. If HCP answers 404 for that workspace
+  # the VM is gone -> delete the environment and its credential. Anything but
+  # an explicit 404 (auth error, outage) keeps the environment. The workspace
+  # is looked up by name instead of diffing against List Workspaces, which is
+  # paginated - a missing page would otherwise delete live environments.
+  # Applications are never deleted (shared "<app>-<env>" objects).
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_concert_core_url
+    inputs:
+      - name: secret_name
+        value: '"concert_core_url"'
+      - name: HCP_AUTH_SECRET
+        value: $HCP_VAULT_AUTH_SECRET
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_concert_api_key
+    inputs:
+      - name: secret_name
+        value: '"concert_api_key"'
+      - name: HCP_AUTH_SECRET
+        value: $HCP_VAULT_AUTH_SECRET
+  - action: assign
+    name: build_concert_auth_header
+    variable: $concert_auth_header
+    value: '"C_API_KEY " + $get_concert_api_key.result'
+  - action: assign
+    name: build_hcp_auth_header
+    variable: $hcp_auth_header
+    value: '"Bearer " + $filter_terraform_api_key.result'
+  - action: system/Common/HTTP/HTTP Request
+    name: ListConcertEnvironments
+    inputs:
+      - name: method
+        value: '"GET"'
+      - name: host
+        value: $get_concert_core_url.result + "/concert/core/api/v1/environments?page_size=500"
+      - name: headers
+        value: |-
+          {
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": $concert_auth_header
+          }
+  - action: system/Common/JSON/jq
+    name: extract_kubernetes_environments
+    inputs:
+      - name: JSON
+        value: $ListConcertEnvironments.result
+      - name: Filter
+        value: '"[.environments[] | select(.type == \"kubernetes\") | {id, name}]"'
+  - action: foreach
+    name: Reconcile_Concert
+    list: $extract_kubernetes_environments.result
+    blocks:
+      # The list endpoint omits "description" - only the detail call has the
+      # marker, so only environments this demo created are ever touched.
+      - action: system/Common/HTTP/HTTP Request
+        name: GetConcertEnvironment
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: $get_concert_core_url.result + "/concert/core/api/v1/environments/" + $Reconcile_Concert.item.id
+          - name: headers
+            value: |-
+              {
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": $concert_auth_header
+              }
+      - action: system/Common/JSON/jq
+        name: extract_is_demo_environment
+        inputs:
+          - name: JSON
+            value: $GetConcertEnvironment.result
+          - name: Filter
+            value: '"(.description // \"\") | startswith(\"RIA demo environment\") | tostring"'
+      - action: system/Common/HTTP/HTTP Request
+        name: GetWorkspace
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: '"https://app.terraform.io/api/v2/organizations/" + $HCP_TERRAFORM_ORG_NAME + "/workspaces/" + encodeURIComponent($Reconcile_Concert.item.name)'
+          - name: headers
+            value: |-
+              {
+                  "Authorization": $hcp_auth_header,
+                  "Content-Type": "application/vnd.api+json"
+              }
+      - action: system/Common/JSON/jq
+        name: extract_workspace_status
+        inputs:
+          - name: JSON
+            value: $GetWorkspace.result
+          - name: Filter
+            value: '"(.errors[0].status // \"found\") | tostring"'
+      - action: if
+        name: workspace_is_gone
+        condition: $extract_is_demo_environment.result == "true" && $extract_workspace_status.result == "404"
+        then:
+          - action: system/Common/HTTP/HTTP Request
+            name: ListConcertCredentials
+            inputs:
+              - name: method
+                value: '"GET"'
+              - name: host
+                value: $get_concert_core_url.result + "/concert/core/api/v1/credentials"
+              - name: headers
+                value: |-
+                  {
+                      "InstanceId": "0000-0000-0000-0000",
+                      "Authorization": $concert_auth_header
+                  }
+          - action: system/Common/JSON/jq
+            name: extract_credential_ids
+            inputs:
+              - name: JSON
+                value: $ListConcertCredentials.result
+              - name: Filter
+                value: '"[.credentials[] | select(.name==\"" + $Reconcile_Concert.item.name + "\") | .id] | join(\",\")"'
+          - action: system/Common/HTTP/HTTP Request
+            name: DeleteConcertEnvironment
+            inputs:
+              - name: method
+                value: '"DELETE"'
+              - name: host
+                value: $get_concert_core_url.result + "/concert/core/api/v1/environments/" + $Reconcile_Concert.item.id
+              - name: headers
+                value: |-
+                  {
+                      "InstanceId": "0000-0000-0000-0000",
+                      "Authorization": $concert_auth_header
+                  }
+          - action: if
+            name: has_credentials
+            condition: $extract_credential_ids.result != "" && $extract_credential_ids.result != null
+            then:
+              - action: system/Common/HTTP/HTTP Request
+                name: DeleteConcertCredentials
+                inputs:
+                  - name: method
+                    value: '"DELETE"'
+                  - name: host
+                    value: $get_concert_core_url.result + "/concert/core/api/v1/credentials?delete_ids=" + $extract_credential_ids.result
+                  - name: headers
+                    value: |-
+                      {
+                          "InstanceId": "0000-0000-0000-0000",
+                          "Authorization": $concert_auth_header
+                      }
+            else: []
+          - action: system/Common/Status Message Update
+            name: report_removed_environment
+            inputs:
+              - name: message
+                value: '"Removed Concert environment " + $Reconcile_Concert.item.name'
+        else: []
 variables:
   - name: result
     required: false
@@ -131,10 +288,27 @@ variables:
     meta:
       authType: Common/ConfigData
       subType: authentication
+  - name: concert_auth_header
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: hcp_auth_header
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
 meta:
   version: 5
   layout: flow
   workerGroup: default
-  description: This workflow cleans up an empty Workspace in HCP Terraform (the resources
-    inside the workspace are set to be delete after 1 hour without changes).
+  description: This workflow deletes auto-destroyed HCP Terraform workspaces (resources
+    are destroyed after 1 hour without changes) and removes Concert environments (and
+    their credentials) whose workspace no longer exists.
 finally: null
