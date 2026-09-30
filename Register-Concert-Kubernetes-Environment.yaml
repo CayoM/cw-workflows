@@ -1,85 +1,166 @@
 name: Register-Concert-Kubernetes-Environment
 platform: node
 blocks:
-  # "Cannot index string with string 'id'" (the HTTP Request's response
-  # coming back as a raw JSON string instead of a parsed object) happened
-  # FOUR times in a row, for four different reasons, all live-confirmed by
-  # reproducing the exact request/flow logic:
-  #   1. Assumed (wrongly) it was "+" concatenation inside a headers/body
-  #      block. Harmless to keep (matches this repo's own convention: only
-  #      bare $var substitution is used inside headers/body elsewhere), but
-  #      not the actual bug.
-  #   2. CreateConnection's body sent cluster_name/namespaces under a made-up
-  #      "other_fields" key Concert Core's decoder rejects (with a bare JSON
-  #      string, not an object, as the error body - which is what broke jq
-  #      downstream each time). cluster_name belongs on the ingestion job's
-  #      details.parameters instead, matching the working OCP connection in
-  #      concert_environment.yml.
-  #   3. CreateEnvironment's "tags" was a plain string array; Concert Core
-  #      wants a different type (openapi.EntityTags, shape unverified) -
-  #      matched the working OCP environment, which just sends tags: [].
-  #   4. THE STRUCTURAL BUG (this pass): the jq action that extracts an id
-  #      was named the same as the flow variable meant to hold that id
-  #      (e.g. action "connection_id" vs variable $connection_id). Every
-  #      later reference to the bare $connection_id/$environment_id then
-  #      resolved to the ACTION's own output object ({result: "<uuid>"}),
-  #      not the plain id string - so e.g. CreateIngestionJob's
-  #      "credentials_id": $connection_id sent the whole object where a
-  #      string was expected, hitting the identical decoder-rejects-with-a-
-  #      bare-string failure one step further down the chain each time
-  #      (connection_id -> environment_id -> ingestion_job_id, in that
-  #      order, matching the three error reports received in order).
-  #      Fixed by renaming every extraction node to extract_* and always
-  #      explicitly assign-ing the plain-string flow variable from
-  #      $extract_*.result, in both the "just created" and "already
-  #      existed" paths, so the bare $connection_id/$environment_id/
-  #      $ingestion_job_id used everywhere below is unambiguous.
-  #
-  # KNOWN LIMITATION, NOT FIXED (not one of the four bugs above - the job
-  # itself runs SUCCESS/202, no error surfaces in the Workflow at all): the
-  # SBOM-generation step in Concert's roja-ingestion always logs "kubernetes
-  # application name: " empty and fails internally with "deployment name
-  # cannot be empty" (visible only in Concert's own pod logs). Live-confirmed
-  # this is NOT about the "type" field: tried type "kubernetes" (original),
-  # then type "ocp" (same connectionsFields/otherFields shape per Concert's
-  # frontend bundle) - byte-for-byte identical error and stack trace both
-  # times, from the same handler (collectorProcessKubernetes), meaning both
-  # connector "types" share this exact code path. Also tried adding
-  # app_name/app_version to details.parameters - no effect either (that
-  # earlier "fix" was a false positive from misreading an unrelated status
-  # change; retracted). Concert's frontend bundle confirms neither connector
-  # type even exposes an application-name field in its own UI.
-  #
-  # Best working theory: this SBOM step derives the application name/version
-  # from something that only exists on an actual OpenShift cluster with
-  # Operator-installed software (e.g. OLM ClusterServiceVersion objects,
-  # which Concert/Turbonomic/AWX all have from their own operator installs)
-  # - a plain Kubernetes cluster like k3s never has that, regardless of which
-  # connector "type" string is used to register it. If true, this is a
-  # genuine Concert 3.0.1.1 product limitation for generic Kubernetes
-  # environments, not something fixable via this workflow's parameters.
-  #
-  # Net effect: the Environment + Connection this flow creates are real and
-  # correct (host count populates), but the Environment's own deployment/
-  # topology aggregate will most likely stay empty for a plain k3s cluster.
-  # Reverted to type "kubernetes" (the semantically correct value for what
-  # this actually is, and the switch to "ocp" bought nothing).
+  # Registers a RIA k3s cluster in Concert the same way the Concert UI's
+  # "Discover your data" wizard does (reverse-engineered from the Concert
+  # 3.0.1.1 UI bundle, see optimized-solution docs/superpowers/specs/
+  # 2026-09-30-environment-type-design.md):
+  #   application "<app>-<env>" (created if missing, criticality from
+  #   environment_type) -> credential (kubernetes) -> environment (name =
+  #   deployment_id, purpose from environment_type) -> POST
+  #   /core/api/v1/k8_components with the app namespace, that application
+  #   and Trivy image scanning.
+  # The old POST /ingestion_jobs + collect_data pair never sent namespaces or
+  # an application, which is what made Concert's SBOM step fail with
+  # "deployment name cannot be empty" - not a k3s limitation.
+  # Names must stay [a-z0-9-]: discovery derives a profile name from
+  # environment, namespace and application names and rejects spaces and
+  # parentheses (live-confirmed: "Invalid Profile name '..._(Kubernetes)_...'").
+  # Expression rules (all live-confirmed earlier): bare $var only inside
+  # headers/body; jq nodes are named extract_* and assign-ed into plain vars.
+  # A non-2xx HTTP response does not abort the flow - the "already exists"
+  # paths below rely on that.
+  - action: switch
+    name: map_environment_type
+    expression: $environment_type
+    cases:
+      - value: '"PROD"'
+        blocks:
+          - action: assign
+            name: set_purpose_prod
+            variable: $purpose
+            value: '"Production"'
+          - action: assign
+            name: set_criticality_prod
+            variable: $criticality
+            value: "5"
+      - value: '"STAGE"'
+        blocks:
+          - action: assign
+            name: set_purpose_stage
+            variable: $purpose
+            value: '"Staging"'
+          - action: assign
+            name: set_criticality_stage
+            variable: $criticality
+            value: "4"
+      - value: '"INT"'
+        blocks:
+          - action: assign
+            name: set_purpose_int
+            variable: $purpose
+            value: '"Testing"'
+          - action: assign
+            name: set_criticality_int
+            variable: $criticality
+            value: "3"
+    default:
+      - action: assign
+        name: set_purpose_dev
+        variable: $purpose
+        value: '"Development"'
+      - action: assign
+        name: set_criticality_dev
+        variable: $criticality
+        value: "2"
   - action: assign
     name: build_auth_header
     variable: $auth_header
     value: '"C_API_KEY " + $concert_api_key'
   - action: assign
-    name: build_connection_description
-    variable: $connection_description
-    value: '"Registered by Concert Workflows (" + $instance_name + ")"'
+    name: build_application_name
+    variable: $application_name
+    value: '($app_name + "-" + $environment_type).toLowerCase()'
+  # The description prefix "RIA demo environment" is the marker the hourly
+  # Cleanup_HCP_Terraform_Workspace reconcile uses - do not change it.
   - action: assign
     name: build_environment_description
     variable: $environment_description
-    value: '"RIA demo environment (" + $instance_name + " / " + $app_name + ")"'
+    value: '"RIA demo environment (" + $deployment_id + " / " + $application_name + ")"'
   - action: assign
-    name: build_ingestion_job_name
-    variable: $ingestion_job_name
-    value: '$connection_name + " data collection"'
+    name: build_discovery_job_name
+    variable: $discovery_job_name
+    value: '"discovery-" + $deployment_id'
+  # Shared application per App+ENV. Name is Concert's uniqueness key: a second
+  # deploy gets an "already exists" error here, which is fine - the lookup
+  # below finds the existing one either way.
+  - action: system/Common/HTTP/HTTP Request
+    name: EnsureApplication
+    inputs:
+      - name: method
+        value: '"POST"'
+      - name: host
+        value: $concert_core_url + "/concert/core/api/v1/applications"
+      - name: headers
+        value: |-
+          {
+              "Content-Type": "application/json",
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": $auth_header
+          }
+      - name: body
+        value: |-
+          {
+              "name": $application_name,
+              "version": "1.0.0"
+          }
+  - action: system/Common/HTTP/HTTP Request
+    name: LookupApplication
+    inputs:
+      - name: method
+        value: '"POST"'
+      - name: host
+        value: $concert_core_url + "/concert/core/api/v2/lookup_applications"
+      - name: headers
+        value: |-
+          {
+              "Content-Type": "application/json",
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": $auth_header
+          }
+      - name: body
+        value: |-
+          {
+              "application_names": [ $application_name ]
+          }
+  - action: system/Common/JSON/jq
+    name: extract_application_id
+    inputs:
+      - name: JSON
+        value: $LookupApplication.result
+      - name: Filter
+        value: '".applications[0].id // empty"'
+  - action: assign
+    name: set_application_id
+    variable: $application_id
+    value: $extract_application_id.result
+  # Criticality + data sensitivity feed Concert's risk score (environmental
+  # factor): PROD 5, STAGE 4, INT 3, DEV 2 - purpose alone does not.
+  - action: if
+    name: has_application
+    condition: $application_id != "" && $application_id != null
+    then:
+      - action: system/Common/HTTP/HTTP Request
+        name: SetApplicationCriticality
+        inputs:
+          - name: method
+            value: '"PATCH"'
+          - name: host
+            value: $concert_core_url + "/concert/core/api/v1/applications/" + $application_id + "?release_version=1.0.0"
+          - name: headers
+            value: |-
+              {
+                  "Content-Type": "application/json",
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": $auth_header
+              }
+          - name: body
+            value: |-
+              {
+                  "criticality": $criticality,
+                  "data_sensitivity": $criticality
+              }
+    else: []
   - action: system/Common/HTTP/HTTP Request
     name: CreateConnection
     inputs:
@@ -97,8 +178,8 @@ blocks:
       - name: body
         value: |-
           {
-              "name": $connection_name,
-              "description": $connection_description,
+              "name": $deployment_id,
+              "description": $environment_description,
               "type": "kubernetes",
               "credentials": [
                   { "key": "endpoint", "value": $k3s_endpoint },
@@ -140,12 +221,15 @@ blocks:
           - name: JSON
             value: $ListConnections.result
           - name: Filter
-            value: '".credentials[] | select(.name==\"" + $connection_name + "\") | .id"'
+            value: '".credentials[] | select(.name==\"" + $deployment_id + "\") | .id"'
       - action: assign
         name: set_connection_id_from_lookup
         variable: $connection_id
         value: $extract_existing_connection_id.result
     else: []
+  # purpose can only be set at creation (environment PATCH covers only
+  # description/tags), so the environment is created here and discovery is
+  # pointed at it by name.
   - action: system/Common/HTTP/HTTP Request
     name: CreateEnvironment
     inputs:
@@ -163,59 +247,19 @@ blocks:
       - name: body
         value: |-
           {
-              "name": $environment_name,
+              "name": $deployment_id,
               "description": $environment_description,
               "tags": [],
               "type": "kubernetes",
-              "purpose": "Demo"
+              "purpose": $purpose
           }
-  - action: system/Common/JSON/jq
-    name: extract_environment_id
-    inputs:
-      - name: JSON
-        value: $CreateEnvironment.result
-      - name: Filter
-        value: '".id // empty"'
-  - action: assign
-    name: set_environment_id_from_create
-    variable: $environment_id
-    value: $extract_environment_id.result
-  - action: if
-    name: environment_already_existed
-    condition: $environment_id == "" || $environment_id == null
-    then:
-      - action: system/Common/HTTP/HTTP Request
-        name: ListEnvironments
-        inputs:
-          - name: method
-            value: '"GET"'
-          - name: host
-            value: $concert_core_url + "/concert/core/api/v1/environments"
-          - name: headers
-            value: |-
-              {
-                  "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": $auth_header
-              }
-      - action: system/Common/JSON/jq
-        name: extract_existing_environment_id
-        inputs:
-          - name: JSON
-            value: $ListEnvironments.result
-          - name: Filter
-            value: '".environments[] | select(.name==\"" + $environment_name + "\") | .id"'
-      - action: assign
-        name: set_environment_id_from_lookup
-        variable: $environment_id
-        value: $extract_existing_environment_id.result
-    else: []
   - action: system/Common/HTTP/HTTP Request
-    name: CreateIngestionJob
+    name: DiscoverCluster
     inputs:
       - name: method
         value: '"POST"'
       - name: host
-        value: $concert_core_url + "/concert/core/api/v1/ingestion_jobs"
+        value: $concert_core_url + "/concert/core/api/v1/k8_components"
       - name: headers
         value: |-
           {
@@ -226,62 +270,46 @@ blocks:
       - name: body
         value: |-
           {
-              "name": $ingestion_job_name,
-              "description": "Kubernetes environment discovery (managed by Concert Workflows)",
               "type": "kubernetes",
               "credentials_id": $connection_id,
-              "scheduled": 0,
-              "enabled": "enabled",
-              "details": {
-                  "parameters": [
-                      { "key": "environment_id", "value": $environment_id },
-                      { "key": "cluster_name", "value": $cluster_name }
-                  ]
-              }
+              "discovery_job_name": $discovery_job_name,
+              "disable_trivy_scan": false,
+              "assessment_period": "hour",
+              "environment": $deployment_id,
+              "ingestion_details": {
+                  "parameters": [ { "key": "cluster_name", "value": $cluster_name } ]
+              },
+              "namespaces": [
+                  {
+                      "application_name": $application_name,
+                      "namespace": $app_namespace,
+                      "version": "1.0.0",
+                      "label": "",
+                      "cluster_name": $cluster_name
+                  }
+              ],
+              "clusters": [ { "name": $cluster_name, "namespaces": [ $app_namespace ] } ]
           }
   - action: system/Common/JSON/jq
-    name: extract_ingestion_job_id
+    name: extract_discovery_job_id
     inputs:
       - name: JSON
-        value: $CreateIngestionJob.result
+        value: $DiscoverCluster.result
       - name: Filter
-        value: '".id // empty"'
+        value: '".discovery_job_id // empty"'
   - action: assign
-    name: set_ingestion_job_id
-    variable: $ingestion_job_id
-    value: $extract_ingestion_job_id.result
-  - action: if
-    name: has_new_ingestion_job
-    condition: $ingestion_job_id != "" && $ingestion_job_id != null
-    then:
-      - action: system/Common/HTTP/HTTP Request
-        name: TriggerCollection
-        inputs:
-          - name: method
-            value: '"POST"'
-          - name: host
-            value: $concert_core_url + "/concert/ingestion/api/v1/collect_data"
-          - name: headers
-            value: |-
-              {
-                  "Content-Type": "application/json",
-                  "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": $auth_header
-              }
-          - name: body
-            value: |-
-              {
-                  "job_id": $ingestion_job_id
-              }
-    else: []
+    name: set_discovery_job_id
+    variable: $discovery_job_id
+    value: $extract_discovery_job_id.result
   - action: assign
     name: Assign_result
     variable: $result
     value: |-
       {
           "connection_id": $connection_id,
-          "environment_id": $environment_id,
-          "ingestion_job_id": $ingestion_job_id
+          "discovery_job_id": $discovery_job_id,
+          "application_name": $application_name,
+          "application_id": $application_id
       }
 variables:
   - name: result
@@ -292,15 +320,8 @@ variables:
     type:
       type: object
     value: "{}"
-  # No hardcoded cluster URL as a default on purpose - this flow is only ever
-  # meant to run with concert_core_url supplied by the caller (End-to-End-
-  # Automation.yaml fetches it from HCP Vault via HCP_Vault_Dedicated_Get_Secret,
-  # kept current there by optimized-solution's post_config.yml on every
-  # install/reinstall - see that task's Vault sync). A stale hardcoded
-  # cluster URL here would silently point at the wrong cluster the moment a
-  # new one is provisioned, especially if this flow is ever run standalone
-  # from Concert Workflows Studio without overriding it. Empty default
-  # matches concert_api_key just below, which never had this problem.
+  # No hardcoded cluster URL default on purpose - the caller passes the value
+  # from HCP Vault (kept current by optimized-solution's post_config.yml).
   - name: concert_core_url
     required: true
     isInput: true
@@ -317,7 +338,7 @@ variables:
     type:
       type: string
     value: '""'
-  - name: instance_name
+  - name: deployment_id
     required: true
     isInput: true
     isOutput: false
@@ -325,16 +346,24 @@ variables:
     type:
       type: string
     value: '""'
+  - name: environment_type
+    required: true
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"DEV"'
   - name: app_name
-    required: false
+    required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
     value: '""'
-  - name: cloud_provider
-    required: false
+  - name: app_namespace
+    required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
@@ -358,29 +387,6 @@ variables:
       type: string
     value: '""'
   - name: cluster_name
-    required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '""'
-  - name: namespaces
-    required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '""'
-  # connection_name/environment_name have no expression default on purpose -
-  # a default of $instance_name + " (Kubernetes)" broke with "$instance_name
-  # is not defined" the first time this actually ran (live-confirmed).
-  # Variable defaults are evaluated before input bindings, so they can't
-  # reference another variable - every other flow in this repo only uses
-  # static-literal defaults, which is the pattern to follow. The caller
-  # computes and passes both explicitly (see End-to-End-Automation.yaml).
-  - name: connection_name
     required: true
     isInput: true
     isOutput: false
@@ -388,17 +394,38 @@ variables:
     type:
       type: string
     value: '""'
-  - name: environment_name
-    required: true
-    isInput: true
+  - name: purpose
+    required: false
+    isInput: false
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
     value: '""'
-  # These three hold plain id strings, explicitly assign-ed from the
-  # extract_*.result of their matching jq node (never read bare off a
-  # same-named action - see the CORRECTION at the top of this file for why).
+  - name: criticality
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: number
+    value: "2"
+  - name: application_name
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: application_id
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
   - name: connection_id
     required: false
     isInput: false
@@ -407,7 +434,7 @@ variables:
     type:
       type: string
     value: '""'
-  - name: environment_id
+  - name: discovery_job_id
     required: false
     isInput: false
     isOutput: false
@@ -415,7 +442,7 @@ variables:
     type:
       type: string
     value: '""'
-  - name: ingestion_job_id
+  - name: discovery_job_name
     required: false
     isInput: false
     isOutput: false
@@ -431,23 +458,7 @@ variables:
     type:
       type: string
     value: '""'
-  - name: connection_description
-    required: false
-    isInput: false
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '""'
   - name: environment_description
-    required: false
-    isInput: false
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '""'
-  - name: ingestion_job_name
     required: false
     isInput: false
     isOutput: false
@@ -458,22 +469,13 @@ variables:
 meta:
   version: 5
   description: >-
-    Register a RIA-provisioned k3s cluster as a Kubernetes environment in
-    Concert (connection + environment + ingestion job + trigger collection),
-    reusing the connector type/field shape confirmed live for Concert
-    3.0.1.1's OCP environment registration (roles/concert_platform/tasks/
-    concert_environment.yml in the optimized-solution repo). Several real
-    bugs were found and fixed only by actually running this end to end (see
-    the notes at the top of the blocks list) - re-test after any further
-    edit before relying on it for a demo. KNOWN LIMITATION (see the notes
-    at the top of the blocks list): the Environment's own deployment/
-    topology aggregate most likely stays empty for a plain Kubernetes
-    cluster - looks like a genuine Concert 3.0.1.1 product gap, not
-    something fixable from here. The Environment + Connection themselves
-    are still created correctly.
-    server_validation_enabled is hardcoded to false (self-signed k3s API
-    server cert on the ephemeral VM), matching validate_certs:false used
-    elsewhere in this project for the same class of target.
+    Register a RIA-provisioned k3s cluster in Concert like the UI's discovery
+    wizard: shared application "<app>-<env>" with criticality/data
+    sensitivity from environment_type (PROD 5, STAGE 4, INT 3, DEV 2) so
+    Concert's risk score ranks PROD CVEs higher, kubernetes credential,
+    environment (name = deployment_id, purpose from environment_type), then
+    native discovery of the app namespace with Trivy image scanning.
+    server_validation_enabled is false (self-signed k3s API cert).
   layout: flow
   workerGroup: default
 finally: null
