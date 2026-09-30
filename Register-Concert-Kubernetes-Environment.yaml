@@ -13,6 +13,9 @@ blocks:
   # The old POST /ingestion_jobs + collect_data pair never sent namespaces or
   # an application, which is what made Concert's SBOM step fail with
   # "deployment name cannot be empty" - not a k3s limitation.
+  # profile_name (resilience profile) is required by discovery's kube metrics
+  # and misconfig scan modules - without it they abort with KeyError 'profile'
+  # (live-confirmed); "profile" is rejected as unknown field, "profile_name" works.
   # Names must stay [a-z0-9-]: discovery derives a profile name from
   # environment, namespace and application names and rejects spaces and
   # parentheses (live-confirmed: "Invalid Profile name '..._(Kubernetes)_...'").
@@ -205,7 +208,8 @@ blocks:
                       "namespace": $app_namespace,
                       "version": "1.0.0",
                       "label": "",
-                      "cluster_name": $cluster_name
+                      "cluster_name": $cluster_name,
+                      "profile_name": $resilience_profile
                   }
               ],
               "clusters": [ { "name": $cluster_name, "namespaces": [ $app_namespace ] } ]
@@ -468,6 +472,14 @@ variables:
     type:
       type: string
     value: '""'
+  - name: resilience_profile
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"auto_discovery_k8s_profile"'
   - name: app_wait_seconds
     required: false
     isInput: false
