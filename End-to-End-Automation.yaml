@@ -18,7 +18,7 @@ blocks:
   - action: assign
     name: build_deployment_id
     variable: $deployment_id
-    value: '($app_name + "-" + $environment_type + "-" + Math.random().toString(36).substring(2, 6)).toLowerCase()'
+    value: '($app_name + "-" + $environment_type + "-" + (Math.random().toString(36) + "0000").substring(2, 6)).toLowerCase()'
   - action: if
     name: deployment_id_is_invalid
     condition: "$deployment_id.match(/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/) ? false : true"

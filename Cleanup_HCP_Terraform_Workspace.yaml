@@ -174,7 +174,9 @@ blocks:
             value: '"(.errors[0].status // \"found\") | tostring"'
       - action: if
         name: workspace_is_gone
-        condition: $extract_is_demo_environment.result == "true" && $extract_workspace_status.result == "404"
+        # HCP also answers 404 when the org/token cannot see a workspace, so
+        # only trust a 404 if this run's own workspace listing succeeded.
+        condition: $HashiCorp_3.result.data != null && $extract_is_demo_environment.result == "true" && $extract_workspace_status.result == "404"
         then:
           - action: system/Common/HTTP/HTTP Request
             name: ListConcertCredentials
