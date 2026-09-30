@@ -153,7 +153,7 @@ blocks:
                     value: $create_workspace.result.data.id
         else: []
   - action: system/HashiCorp/Terraform/Workspace Variables/Create a Variable
-    name: create_var_instance_type
+    name: create_var_environment_type
     inputs:
       - name: authKey
         value: $AuthOverride_1.result
@@ -163,8 +163,8 @@ blocks:
               "data": {
                   "type": "vars",
                   "attributes": {
-                      "key": "instance_type",
-                      "value": $TERRAFORM_INSTANCE_TYPE,
+                      "key": "environment_type",
+                      "value": $TERRAFORM_ENVIRONMENT_TYPE,
                       "category": "terraform"
                   }
               }
@@ -500,14 +500,14 @@ variables:
     type:
       type: string
     value: '"turbonomic"'
-  - name: TERRAFORM_INSTANCE_TYPE
+  - name: TERRAFORM_ENVIRONMENT_TYPE
     required: true
     isInput: true
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
-    value: '"t3.micro"'
+    value: '"DEV"'
   - name: HCP_VAULT_AUTH_SECRET
     required: false
     isInput: true
