@@ -43,7 +43,7 @@ blocks:
     authentication: '"ibmconcert/terraform"'
     override: "{\"apiKey\":$filter_terraform_api_key.result}"
     breakpoint: enabled
-  - action: system/HashiCorp/Terraform/Workspaces/List workspaces
+  - action: system/HashiCorp/Terraform/Workspaces/List Workspaces
     name: HashiCorp_3
     inputs:
       - name: authKey
@@ -60,13 +60,15 @@ blocks:
         condition: "($ForEach_1.item.attributes[\"auto-destroy-status\"] == \"applied\"\
           ) && ($ForEach_1.item.attributes.actions[\"is-destroyable\"] == true)"
         then:
-          - action: system/HashiCorp/Terraform/Workspaces/Delete a workspace
+          - action: system/HashiCorp/Terraform/Workspaces/Force Delete a Workspace by Name
             name: HashiCorp_4
             inputs:
               - name: authKey
                 value: $AuthOverride_1.result
-              - name: workspace_id
-                value: $ForEach_1.item.id
+              - name: organization_name
+                value: $HCP_TERRAFORM_ORG_NAME
+              - name: name
+                value: $ForEach_1.item.attributes.name
             breakpoint: enabled
           - action: assign
             name: Assign_1
