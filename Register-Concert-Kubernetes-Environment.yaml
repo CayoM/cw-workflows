@@ -5,11 +5,11 @@ blocks:
   # "Discover your data" wizard does (reverse-engineered from the Concert
   # 3.0.1.1 UI bundle, see optimized-solution docs/superpowers/specs/
   # 2026-09-30-environment-type-design.md):
-  #   application "<app>-<env>" (created if missing, criticality from
-  #   environment_type) -> credential (kubernetes) -> environment (name =
-  #   deployment_id, purpose from environment_type) -> POST
-  #   /core/api/v1/k8_components with the app namespace, that application
-  #   and Trivy image scanning.
+  #   credential (kubernetes) -> environment (name = deployment_id, purpose
+  #   from environment_type) -> POST /core/api/v1/k8_components with the app
+  #   namespace, application "<app>-<env>" and Trivy image scanning (discovery
+  #   creates/reuses the application) -> application criticality from
+  #   environment_type once the application exists.
   # The old POST /ingestion_jobs + collect_data pair never sent namespaces or
   # an application, which is what made Concert's SBOM step fail with
   # "deployment name cannot be empty" - not a k3s limitation.
@@ -81,86 +81,6 @@ blocks:
     name: build_discovery_job_name
     variable: $discovery_job_name
     value: '"discovery-" + $deployment_id'
-  # Shared application per App+ENV. Name is Concert's uniqueness key: a second
-  # deploy gets an "already exists" error here, which is fine - the lookup
-  # below finds the existing one either way.
-  - action: system/Common/HTTP/HTTP Request
-    name: EnsureApplication
-    inputs:
-      - name: method
-        value: '"POST"'
-      - name: host
-        value: $concert_core_url + "/concert/core/api/v1/applications"
-      - name: headers
-        value: |-
-          {
-              "Content-Type": "application/json",
-              "InstanceId": "0000-0000-0000-0000",
-              "Authorization": $auth_header
-          }
-      - name: body
-        value: |-
-          {
-              "name": $application_name,
-              "version": "1.0.0"
-          }
-  - action: system/Common/HTTP/HTTP Request
-    name: LookupApplication
-    inputs:
-      - name: method
-        value: '"POST"'
-      - name: host
-        value: $concert_core_url + "/concert/core/api/v2/lookup_applications"
-      - name: headers
-        value: |-
-          {
-              "Content-Type": "application/json",
-              "InstanceId": "0000-0000-0000-0000",
-              "Authorization": $auth_header
-          }
-      - name: body
-        value: |-
-          {
-              "application_names": [ $application_name ]
-          }
-  - action: system/Common/JSON/jq
-    name: extract_application_id
-    inputs:
-      - name: JSON
-        value: $LookupApplication.result
-      - name: Filter
-        value: '".applications[0].id // empty"'
-  - action: assign
-    name: set_application_id
-    variable: $application_id
-    value: $extract_application_id.result
-  # Criticality + data sensitivity feed Concert's risk score (environmental
-  # factor): PROD 5, STAGE 4, INT 3, DEV 2 - purpose alone does not.
-  - action: if
-    name: has_application
-    condition: $application_id != "" && $application_id != null
-    then:
-      - action: system/Common/HTTP/HTTP Request
-        name: SetApplicationCriticality
-        inputs:
-          - name: method
-            value: '"PATCH"'
-          - name: host
-            value: $concert_core_url + "/concert/core/api/v1/applications/" + $application_id + "?release_version=1.0.0"
-          - name: headers
-            value: |-
-              {
-                  "Content-Type": "application/json",
-                  "InstanceId": "0000-0000-0000-0000",
-                  "Authorization": $auth_header
-              }
-          - name: body
-            value: |-
-              {
-                  "criticality": $criticality,
-                  "data_sensitivity": $criticality
-              }
-    else: []
   - action: system/Common/HTTP/HTTP Request
     name: CreateConnection
     inputs:
@@ -301,6 +221,88 @@ blocks:
     name: set_discovery_job_id
     variable: $discovery_job_id
     value: $extract_discovery_job_id.result
+  # The discovery job creates the application "<app>-<env>" itself (Concert
+  # 3.0.1.1 UI never uses POST /core/api/v1/applications any more - that legacy
+  # 2.x path fails on a 3.0.1.1 schema). The job runs asynchronously, so poll
+  # the lookup until the application exists (live: ~15-30 s), then set its
+  # criticality. A timeout only skips the criticality step - the environment
+  # and the discovery itself are already in place.
+  - action: assign
+    name: set_app_wait_start
+    variable: $app_wait_start
+    value: Date.now()
+  - action: while
+    name: WaitForApplication
+    condition: ($application_id == "" || $application_id == null) && (Date.now() - $app_wait_start < $app_wait_seconds * 1000)
+    blocks:
+      - action: system/Common/Sleep
+        name: SleepBeforeLookup
+        inputs:
+          - name: seconds
+            value: "15"
+      - action: system/Common/HTTP/HTTP Request
+        name: LookupApplication
+        inputs:
+          - name: method
+            value: '"POST"'
+          - name: host
+            value: $concert_core_url + "/concert/core/api/v2/lookup_applications"
+          - name: headers
+            value: |-
+              {
+                  "Content-Type": "application/json",
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": $auth_header
+              }
+          - name: body
+            value: |-
+              {
+                  "application_names": [ $application_name ]
+              }
+      - action: system/Common/JSON/jq
+        name: extract_application_id
+        inputs:
+          - name: JSON
+            value: $LookupApplication.result
+          - name: Filter
+            value: '".applications[0].id // empty"'
+      - action: assign
+        name: set_application_id
+        variable: $application_id
+        value: $extract_application_id.result
+  # Criticality + data impact risk feed Concert's risk score (environmental
+  # factor): PROD 5, STAGE 4, INT 3, DEV 2 - purpose alone does not. The API
+  # field is data_impact_risk (data_sensitivity is rejected: live 400).
+  - action: if
+    name: has_application
+    condition: $application_id != "" && $application_id != null
+    then:
+      - action: system/Common/HTTP/HTTP Request
+        name: SetApplicationCriticality
+        inputs:
+          - name: method
+            value: '"PATCH"'
+          - name: host
+            value: $concert_core_url + "/concert/core/api/v1/applications/" + $application_id + "?release_version=1.0.0"
+          - name: headers
+            value: |-
+              {
+                  "Content-Type": "application/json",
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": $auth_header
+              }
+          - name: body
+            value: |-
+              {
+                  "criticality": $criticality,
+                  "data_impact_risk": $criticality
+              }
+    else:
+      - action: system/Common/Status Message Update
+        name: report_application_missing
+        inputs:
+          - name: message
+            value: '"Application " + $application_name + " not found after discovery - criticality not set"'
   - action: assign
     name: Assign_result
     variable: $result
@@ -466,15 +468,32 @@ variables:
     type:
       type: string
     value: '""'
+  - name: app_wait_seconds
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: number
+    value: "300"
+  - name: app_wait_start
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: any
+    value: '""'
 meta:
   version: 5
   description: >-
     Register a RIA-provisioned k3s cluster in Concert like the UI's discovery
-    wizard: shared application "<app>-<env>" with criticality/data
-    sensitivity from environment_type (PROD 5, STAGE 4, INT 3, DEV 2) so
-    Concert's risk score ranks PROD CVEs higher, kubernetes credential,
-    environment (name = deployment_id, purpose from environment_type), then
-    native discovery of the app namespace with Trivy image scanning.
+    wizard: kubernetes credential, environment (name = deployment_id,
+    purpose from environment_type), native discovery of the app namespace
+    with Trivy image scanning into the shared application "<app>-<env>",
+    then that application's criticality/data impact risk from
+    environment_type (PROD 5, STAGE 4, INT 3, DEV 2) so Concert's risk score
+    ranks PROD CVEs higher.
     server_validation_enabled is false (self-signed k3s API cert).
   layout: flow
   workerGroup: default
