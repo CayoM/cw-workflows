@@ -211,6 +211,45 @@ blocks:
                       "InstanceId": "0000-0000-0000-0000",
                       "Authorization": $concert_auth_header
                   }
+          # Discovery jobs are listed under /ingestion_jobs (type discovery_job)
+          # and named "discovery-<deployment_id>" by the Register flow.
+          - action: system/Common/HTTP/HTTP Request
+            name: ListConcertIngestionJobs
+            inputs:
+              - name: method
+                value: '"GET"'
+              - name: host
+                value: $get_concert_core_url.result + "/concert/core/api/v1/ingestion_jobs"
+              - name: headers
+                value: |-
+                  {
+                      "InstanceId": "0000-0000-0000-0000",
+                      "Authorization": $concert_auth_header
+                  }
+          - action: system/Common/JSON/jq
+            name: extract_discovery_job_ids
+            inputs:
+              - name: JSON
+                value: $ListConcertIngestionJobs.result
+              - name: Filter
+                value: '"[.ingestion_jobs[] | select(.name==\"discovery-" + $Reconcile_Concert.item.name + "\") | .id]"'
+          - action: foreach
+            name: DeleteDiscoveryJobs
+            list: $extract_discovery_job_ids.result
+            blocks:
+              - action: system/Common/HTTP/HTTP Request
+                name: DeleteDiscoveryJob
+                inputs:
+                  - name: method
+                    value: '"DELETE"'
+                  - name: host
+                    value: $get_concert_core_url.result + "/concert/core/api/v1/ingestion_jobs/" + $DeleteDiscoveryJobs.item
+                  - name: headers
+                    value: |-
+                      {
+                          "InstanceId": "0000-0000-0000-0000",
+                          "Authorization": $concert_auth_header
+                      }
           - action: if
             name: has_credentials
             condition: $extract_credential_ids.result != "" && $extract_credential_ids.result != null
