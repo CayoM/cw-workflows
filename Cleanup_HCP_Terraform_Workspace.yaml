@@ -43,6 +43,27 @@ blocks:
     authentication: '"ibmconcert/terraform"'
     override: "{\"apiKey\":$filter_terraform_api_key.result}"
     breakpoint: enabled
+  # Single source for the org shared with Create_HCP_Terraform_Workspace: a
+  # wrong org here makes every workspace lookup 404 and would delete all live
+  # demo environments, so a missing secret aborts the run.
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_hcp_terraform_org
+    inputs:
+      - name: secret_name
+        value: '"hcp_terraform_org"'
+      - name: HCP_AUTH_SECRET
+        value: $HCP_VAULT_AUTH_SECRET
+  - action: if
+    name: hcp_terraform_org_missing
+    condition: '!$get_hcp_terraform_org.result'
+    then:
+      - action: throw
+        error: '"Vault secret hcp_terraform_org is missing or empty"'
+    else: []
+  - action: assign
+    name: set_hcp_terraform_org
+    variable: $HCP_TERRAFORM_ORG_NAME
+    value: $get_hcp_terraform_org.result
   - action: system/HashiCorp/Terraform/Workspaces/List Workspaces
     name: HashiCorp_3
     inputs:
@@ -76,9 +97,10 @@ blocks:
             value: $HashiCorp_4.result
             breakpoint: enabled
         else: []
-  # Concert reconcile: every Concert environment created by the demo is of
-  # type kubernetes and carries the description prefix "RIA demo environment" and is named after its
-  # deployment id = HCP workspace name. If HCP answers 404 for that workspace
+  # Concert reconcile: every Concert environment created by the demo carries
+  # the description prefix "RIA demo environment" and is named after its
+  # deployment id = HCP workspace name. Concert 3.0.1.1 drops the "type"
+  # sent on create (always ""), so the description marker is the only filter. If HCP answers 404 for that workspace
   # the VM is gone -> delete the environment and its credential. Anything but
   # an explicit 404 (auth error, outage) keeps the environment. The workspace
   # is looked up by name instead of diffing against List Workspaces, which is
@@ -120,15 +142,15 @@ blocks:
               "Authorization": $concert_auth_header
           }
   - action: system/Common/JSON/jq
-    name: extract_kubernetes_environments
+    name: extract_environments
     inputs:
       - name: JSON
         value: $ListConcertEnvironments.result
       - name: Filter
-        value: '"[.environments[] | select(.type == \"kubernetes\") | {id, name}]"'
+        value: '"[.environments[] | {id, name}]"'
   - action: foreach
     name: Reconcile_Concert
-    list: $extract_kubernetes_environments.result
+    list: $extract_environments.result
     blocks:
       # The list endpoint omits "description" - only the detail call has the
       # marker, so only environments this demo created are ever touched.
@@ -298,7 +320,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"cayo-org"'
+    value: '""'
   - name: SECRETS
     required: false
     isInput: false

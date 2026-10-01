@@ -51,6 +51,26 @@ blocks:
     authentication: '"ibmconcert/terraform"'
     override: "{\"apiKey\":$filter_terraform_api_key.result}"
     breakpoint: enabled
+  # Single source for the org shared with Cleanup_HCP_Terraform_Workspace,
+  # which looks workspaces up in this org to decide what to delete.
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_hcp_terraform_org
+    inputs:
+      - name: secret_name
+        value: '"hcp_terraform_org"'
+      - name: HCP_AUTH_SECRET
+        value: $HCP_VAULT_AUTH_SECRET
+  - action: if
+    name: hcp_terraform_org_missing
+    condition: '!$get_hcp_terraform_org.result'
+    then:
+      - action: throw
+        error: '"Vault secret hcp_terraform_org is missing or empty"'
+    else: []
+  - action: assign
+    name: set_hcp_terraform_org
+    variable: $HCP_TERRAFORM_ORG_NAME
+    value: $get_hcp_terraform_org.result
   - action: comment
     value: Use correct branch containing the Terraform code
   - action: if
@@ -436,7 +456,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"cayo-org"'
+    value: '""'
   - name: WORKSPACE_EXECUTION_MODE
     required: false
     isInput: false
