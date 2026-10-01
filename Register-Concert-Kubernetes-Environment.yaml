@@ -472,6 +472,9 @@ variables:
     type:
       type: string
     value: '""'
+  # ria_k8s_discovery_profile = auto_discovery_k8s_profile minus the 4
+  # requirements Concert can't collect itself (created by optimized-solution
+  # concert_settings.yml); avoids a permanent "Missing metrics" action.
   - name: resilience_profile
     required: false
     isInput: true
@@ -479,7 +482,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"auto_discovery_k8s_profile"'
+    value: '"ria_k8s_discovery_profile"'
   - name: app_wait_seconds
     required: false
     isInput: false
