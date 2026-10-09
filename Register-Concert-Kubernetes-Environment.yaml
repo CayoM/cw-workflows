@@ -1,7 +1,7 @@
 name: Register-Concert-Kubernetes-Environment
 platform: node
 blocks:
-  # Registers a RIA k3s cluster in Concert the same way the Concert UI's
+  # Registers a demo k3s cluster in Concert the same way the Concert UI's
   # "Discover your data" wizard does (reverse-engineered from the Concert
   # 3.0.1.1 UI bundle, see optimized-solution docs/superpowers/specs/
   # 2026-09-30-environment-type-design.md):
@@ -74,12 +74,12 @@ blocks:
     name: build_application_name
     variable: $application_name
     value: '($app_name + "-" + $environment_type).toLowerCase()'
-  # The description prefix "RIA demo environment" is the marker the hourly
+  # The description prefix "Concert demo environment" is the marker the hourly
   # Cleanup_HCP_Terraform_Workspace reconcile uses - do not change it.
   - action: assign
     name: build_environment_description
     variable: $environment_description
-    value: '"RIA demo environment (" + $deployment_id + " / " + $application_name + ")"'
+    value: '"Concert demo environment (" + $deployment_id + " / " + $application_name + ")"'
   - action: assign
     name: build_discovery_job_name
     variable: $discovery_job_name
@@ -472,7 +472,7 @@ variables:
     type:
       type: string
     value: '""'
-  # ria_k8s_discovery_profile = auto_discovery_k8s_profile minus the 4
+  # concert_k8s_discovery_profile = auto_discovery_k8s_profile minus the 4
   # requirements Concert can't collect itself (created by optimized-solution
   # concert_settings.yml); avoids a permanent "Missing metrics" action.
   - name: resilience_profile
@@ -482,7 +482,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"ria_k8s_discovery_profile"'
+    value: '"concert_k8s_discovery_profile"'
   - name: app_wait_seconds
     required: false
     isInput: false
@@ -502,7 +502,7 @@ variables:
 meta:
   version: 5
   description: >-
-    Register a RIA-provisioned k3s cluster in Concert like the UI's discovery
+    Register a provisioned k3s demo cluster in Concert like the UI's discovery
     wizard: kubernetes credential, environment (name = deployment_id,
     purpose from environment_type), native discovery of the app namespace
     with Trivy image scanning into the shared application "<app>-<env>",

@@ -116,7 +116,7 @@ blocks:
     variable: $aap_artifacts
     value: $Watch_Ansible_Job.output
   # $aap_artifacts.{k3s_endpoint,k3s_token,cluster_name,app_namespace} come
-  # from ria-demo's setup_k3s.yaml set_stats. concert_core_url/concert_api_key
+  # from concert-demo's setup_k3s.yaml set_stats. concert_core_url/concert_api_key
   # are synced into Vault by optimized-solution's post_config.yml.
   - action: if
     name: has_k3s_token

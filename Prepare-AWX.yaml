@@ -25,7 +25,7 @@ blocks:
         value: |-
           {
               "allow_override": true,
-              "name": "RIA-Project-automated",
+              "name": "Concert Automation",
               "organization": 1,
               "scm_type": "git",
               "scm_url": $GIT_URL
@@ -121,7 +121,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"playbook-ria.yaml"'
+    value: '"playbook-concert.yaml"'
 meta:
   version: 5
   description: Prepare an AWX Instance (create Templates and Projects) for End-To-End

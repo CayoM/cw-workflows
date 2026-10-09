@@ -98,7 +98,7 @@ blocks:
             breakpoint: enabled
         else: []
   # Concert reconcile: every Concert environment created by the demo carries
-  # the description prefix "RIA demo environment" and is named after its
+  # the description prefix "Concert demo environment" and is named after its
   # deployment id = HCP workspace name. Concert 3.0.1.1 drops the "type"
   # sent on create (always ""), so the description marker is the only filter. If HCP answers 404 for that workspace
   # the VM is gone -> delete the environment and its credential. Anything but
@@ -173,7 +173,7 @@ blocks:
           - name: JSON
             value: $GetConcertEnvironment.result
           - name: Filter
-            value: '"(.description // \"\") | startswith(\"RIA demo environment\") | tostring"'
+            value: '"(.description // \"\") | startswith(\"Concert demo environment\") | tostring"'
       - action: system/Common/HTTP/HTTP Request
         name: GetWorkspace
         inputs:
