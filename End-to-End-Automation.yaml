@@ -189,6 +189,39 @@ blocks:
             inputs:
               - name: message
                 value: '"Host vulnerability scan failed, the scheduled scan will retry it"'
+      # Code scan (Semgrep -> Concert static_code_scan). The AWX job knows the repository
+      # of the app (ria-ansible sast_repos) and asks Concert whether it was scanned
+      # already, so this flow needs no repository URL and no Concert query. Apps without a
+      # repository and apps that are scanned already end the job within seconds. Best
+      # effort like the host scan. The application name is built like in
+      # Register-Concert-Kubernetes-Environment (<app>-<environment type>, lower case).
+      - action: try
+        name: Code_Scan
+        try:
+          - action: ./AAP-run-job-by-name
+            name: Scan_Application_Code
+            inputs:
+              - name: aap_job_name
+                value: '"scan-code-sast"'
+              - name: AAP_AUTH
+                value: $AAP_Auth.result
+              - name: launch_data
+                value: |-
+                  {
+                      "job_tags": "",
+                      "extra_vars": JSON.stringify({
+                          "sast_app_name": $app_name,
+                          "sast_application_name": ($app_name + "-" + $environment_type).toLowerCase(),
+                          "concert_url": $get_concert_core_url.result,
+                          "concert_api_key": $get_concert_api_key.result
+                      })
+                  }
+        catch:
+          - action: system/Common/Status Message Update
+            name: Code_Scan_Failed_Message
+            inputs:
+              - name: message
+                value: '"Code scan failed, a later run will retry it"'
     else: []
   - action: assign
     name: Assign_result
