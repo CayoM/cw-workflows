@@ -369,25 +369,75 @@ blocks:
           }
       - name: workspace_id
         value: $create_workspace.result.data.id
-  - action: system/Common/cURL/cURL
-    name: trigger_run
-    inputs:
-      - name: command
-        value: "\"curl --header \\\"Authorization: Bearer \" + $filter_terraform_api_key.result\
-          \ + \"\\\" --header \\\"Content-Type: application/vnd.api+json\\\" --request\
-          \ POST --data-raw '{\\\"data\\\":{\\\"attributes\\\":{\\\"replace-addrs\\\
-          \":[],\\\"is-destroy\\\":false,\\\"refresh\\\":true,\\\"refresh-only\\\"\
-          :false,\\\"allow-config-generation\\\":true,\\\"debugging-mode\\\":false},\\\
-          \"relationships\\\":{\\\"workspace\\\":{\\\"data\\\":{\\\"type\\\":\\\"\
-          workspaces\\\",\\\"id\\\":\\\"\" + $create_workspace.result.data.id + \"\
-          \\\"}}},\\\"type\\\":\\\"runs\\\"}}'  https://app.terraform.io/api/v2/runs\""
-  - action: ./monitor-run
-    name: Monitor_Workspace_Run
-    inputs:
-      - name: id
-        value: $trigger_run.result.data.id
-      - name: terraform_auth
-        value: $AuthOverride_1.result
+  # HCP Terraform runs fail now and then for reasons outside this repo (for example
+  # "504 Gateway Timeout returned from github.com" while installing a provider,
+  # seen 2026-10-12). A new run on the same workspace is safe, so trigger and monitor
+  # are retried up to $max_run_attempts times before the flow gives up.
+  - action: assign
+    name: Init_Run_Attempt
+    variable: $run_attempt
+    value: "0"
+  - action: assign
+    name: Init_Run_Succeeded
+    variable: $run_succeeded
+    value: "false"
+  - action: while
+    name: Terraform_Run_With_Retry
+    condition: $run_succeeded == false && $run_attempt < $max_run_attempts
+    blocks:
+      - action: assign
+        name: Count_Run_Attempt
+        variable: $run_attempt
+        value: $run_attempt + 1
+      - action: try
+        name: Try_Terraform_Run
+        try:
+          - action: system/Common/cURL/cURL
+            name: trigger_run
+            inputs:
+              - name: command
+                value: "\"curl --header \\\"Authorization: Bearer \" + $filter_terraform_api_key.result\
+                  \ + \"\\\" --header \\\"Content-Type: application/vnd.api+json\\\" --request\
+                  \ POST --data-raw '{\\\"data\\\":{\\\"attributes\\\":{\\\"replace-addrs\\\
+                  \":[],\\\"is-destroy\\\":false,\\\"refresh\\\":true,\\\"refresh-only\\\"\
+                  :false,\\\"allow-config-generation\\\":true,\\\"debugging-mode\\\":false},\\\
+                  \"relationships\\\":{\\\"workspace\\\":{\\\"data\\\":{\\\"type\\\":\\\"\
+                  workspaces\\\",\\\"id\\\":\\\"\" + $create_workspace.result.data.id + \"\
+                  \\\"}}},\\\"type\\\":\\\"runs\\\"}}'  https://app.terraform.io/api/v2/runs\""
+          - action: ./monitor-run
+            name: Monitor_Workspace_Run
+            inputs:
+              - name: id
+                value: $trigger_run.result.data.id
+              - name: terraform_auth
+                value: $AuthOverride_1.result
+          - action: assign
+            name: Mark_Run_Succeeded
+            variable: $run_succeeded
+            value: "true"
+        catch:
+          - action: system/Common/Status Message Update
+            name: Run_Failed_Message
+            inputs:
+              - name: message
+                value: '"Terraform run attempt " + $run_attempt + " of " + $max_run_attempts + " failed"'
+          - action: if
+            name: Wait_Before_Retry
+            condition: $run_attempt < $max_run_attempts
+            then:
+              - action: system/Common/Sleep
+                name: Sleep_Before_Retry
+                inputs:
+                  - name: seconds
+                    value: "60"
+            else: []
+  - action: if
+    name: Run_Exhausted_Retries
+    condition: $run_succeeded == false
+    then:
+      - action: throw
+        error: '"Terraform run failed after " + $max_run_attempts + " attempts, see the run in HCP Terraform workspace " + $HCP_TERRAFORM_WORKSPACE_NAME'
+    else: []
   - action: system/HashiCorp/Terraform/State Versions/Fetch the Current State Version
       for a Workspace
     name: HashiCorp_1
@@ -425,6 +475,30 @@ blocks:
     breakpoint: enabled
     skipped: true
 variables:
+  - name: run_attempt
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: number
+    value: "0"
+  - name: run_succeeded
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: boolean
+    value: "false"
+  - name: max_run_attempts
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: number
+    value: "3"
   - name: result
     required: false
     isInput: false
