@@ -17,6 +17,10 @@ blocks:
             error: '"Waited for "+$wait_time+" seconds but no Job named "+$aap_job_name+"
               showed up..."'
         else: []
+      # AWX lists jobs oldest first, 25 per page. With more than 25 jobs of this template
+      # the newest ones sit on page 2 and the watcher never saw them ("no Job named ...
+      # showed up", seen 2026-10-12 with 30 jobs). order_by and id__gt are ignored by this
+      # action, page_size works; 200 is AWX's maximum.
       - action: system/Ansible/Tower/Jobs/Jobs List
         name: Ansible_3
         inputs:
@@ -24,6 +28,8 @@ blocks:
             value: $AAP_AUTH
           - name: search
             value: $aap_job_name
+          - name: page_size
+            value: '"200"'
       - action: if
         name: If_3
         condition: $Ansible_3.result.count > 0
