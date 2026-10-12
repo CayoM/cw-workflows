@@ -222,6 +222,38 @@ blocks:
             inputs:
               - name: message
                 value: '"Code scan failed, a later run will retry it"'
+      # Dynamic scan (OWASP ZAP -> Concert dynamic_scan). ZAP runs as a service in the cluster
+      # and scans the demo web app from outside; the upload creates the access point of the
+      # environment. Target: web.<public ip>.nip.io, the host name of the VM's ingress
+      # (the bare IP answers 404). The Concert environment is named like the deployment id.
+      # Best effort like the other scans.
+      - action: try
+        name: Dynamic_Scan
+        try:
+          - action: ./AAP-run-job-by-name
+            name: Scan_Web_Application
+            inputs:
+              - name: aap_job_name
+                value: '"scan-dast"'
+              - name: AAP_AUTH
+                value: $AAP_Auth.result
+              - name: launch_data
+                value: |-
+                  {
+                      "job_tags": "",
+                      "extra_vars": JSON.stringify({
+                          "dast_target_url": "http://web." + $aap_artifacts.k3s_endpoint.replace(/^https?:\/\//, "").replace(/:\d+$/, "") + ".nip.io",
+                          "dast_env_name": $deployment_id,
+                          "concert_url": $get_concert_core_url.result,
+                          "concert_api_key": $get_concert_api_key.result
+                      })
+                  }
+        catch:
+          - action: system/Common/Status Message Update
+            name: Dynamic_Scan_Failed_Message
+            inputs:
+              - name: message
+                value: '"Dynamic scan failed, a later run will retry it"'
     else: []
   - action: assign
     name: Assign_result
