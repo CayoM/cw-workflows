@@ -234,7 +234,7 @@ variables:
     level: INTERMEDIATE
     type:
       type: string
-    value: '"backend"'
+    value: '"full"'
   - name: app_name
     required: false
     isInput: true
