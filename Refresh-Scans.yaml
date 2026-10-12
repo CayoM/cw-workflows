@@ -1,0 +1,267 @@
+name: Refresh-Scans
+platform: node
+blocks:
+  # Scheduled flow: re-runs the Concert scans for every demo VM that still exists, so
+  # Concert always shows the current state (fixed CVEs close, new findings appear).
+  # Live VMs come from HCP Terraform (workspace name = deployment id, output instance_ip),
+  # the same source the cleanup flow uses. Always: host scan + DAST. With scan_code
+  # (daily schedule): also the code scan with sast_force. One failing deployment or scan
+  # never stops the others.
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_terraform_api_key
+    inputs:
+      - name: secret_name
+        value: '"terraform_api_key"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_hcp_terraform_org
+    inputs:
+      - name: secret_name
+        value: '"hcp_terraform_org"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - action: if
+    name: hcp_terraform_org_missing
+    condition: '!$get_hcp_terraform_org.result || !$get_terraform_api_key.result'
+    then:
+      - action: throw
+        error: '"Vault secret hcp_terraform_org or terraform_api_key is missing or empty"'
+    else: []
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_concert_core_url
+    inputs:
+      - name: secret_name
+        value: '"concert_core_url"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_concert_api_key
+    inputs:
+      - name: secret_name
+        value: '"concert_api_key"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_aap_password
+    inputs:
+      - name: secret_name
+        value: '"awx_admin_password"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_aap_url
+    inputs:
+      - name: secret_name
+        value: '"awx_url"'
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
+  - name: AAP_Auth
+    action: authOverride
+    authentication: '"ibmconcert/awx"'
+    override: "{\"host\":$get_aap_url.result,\"username\":\"admin\",\"password\":$get_aap_password.result}"
+  - action: assign
+    name: build_hcp_auth_header
+    variable: $hcp_auth_header
+    value: '"Bearer " + $get_terraform_api_key.result'
+  # Workspaces that hold a VM: deployment-id name, resources applied (an auto-destroyed
+  # workspace has resource-count 0).
+  - action: system/Common/HTTP/HTTP Request
+    name: ListWorkspaces
+    inputs:
+      - name: method
+        value: '"GET"'
+      - name: host
+        value: '"https://app.terraform.io/api/v2/organizations/" + $get_hcp_terraform_org.result + "/workspaces?page%5Bsize%5D=100"'
+      - name: headers
+        value: |-
+          {
+              "Authorization": $hcp_auth_header,
+              "Content-Type": "application/vnd.api+json"
+          }
+  - action: system/Common/JSON/jq
+    name: extract_live_workspaces
+    inputs:
+      - name: JSON
+        value: $ListWorkspaces.result
+      - name: Filter
+        value: '"[.data[] | select((.attributes.name | test(\"^[a-z0-9]+-(prod|dev|int|stage)-[a-z0-9]{4}$\")) and ((.attributes[\"resource-count\"] // 0) > 0)) | {id, name: .attributes.name}]"'
+  - action: system/Common/Status Message Update
+    name: report_workspaces
+    inputs:
+      - name: message
+        value: '"Live demo deployments: " + JSON.stringify($extract_live_workspaces.result)'
+  - action: foreach
+    name: Refresh_Deployment
+    list: $extract_live_workspaces.result
+    blocks:
+      - action: try
+        name: Refresh_One
+        try:
+          - action: system/Common/HTTP/HTTP Request
+            name: GetOutputs
+            inputs:
+              - name: method
+                value: '"GET"'
+              - name: host
+                value: '"https://app.terraform.io/api/v2/workspaces/" + $Refresh_Deployment.item.id + "/current-state-version-outputs"'
+              - name: headers
+                value: |-
+                  {
+                      "Authorization": $hcp_auth_header,
+                      "Content-Type": "application/vnd.api+json"
+                  }
+          - action: system/Common/JSON/jq
+            name: extract_instance_ip
+            inputs:
+              - name: JSON
+                value: $GetOutputs.result
+              - name: Filter
+                value: '"([.data[] | select(.attributes.name==\"instance_ip\") | .attributes.value] | first // \"\") | tostring"'
+          - action: if
+            name: has_instance_ip
+            condition: $extract_instance_ip.result != "" && $extract_instance_ip.result != "null"
+            then:
+              - action: try
+                name: Host_Scan
+                try:
+                  - action: ./AAP-run-job-by-name
+                    name: Scan_Host_Vulnerabilities
+                    inputs:
+                      - name: aap_job_name
+                        value: '"scan-host-vulnerabilities"'
+                      - name: AAP_AUTH
+                        value: $AAP_Auth.result
+                      - name: launch_data
+                        value: |-
+                          {
+                              "job_tags": "",
+                              "extra_vars": JSON.stringify({
+                                  "ec2_ip": $extract_instance_ip.result,
+                                  "remote_user": $ssh_username,
+                                  "concert_url": $get_concert_core_url.result,
+                                  "concert_api_key": $get_concert_api_key.result
+                              })
+                          }
+                catch:
+                  - action: system/Common/Status Message Update
+                    name: Host_Scan_Failed_Message
+                    inputs:
+                      - name: message
+                        value: '"Host scan failed for " + $Refresh_Deployment.item.name'
+              - action: try
+                name: Dynamic_Scan
+                try:
+                  - action: ./AAP-run-job-by-name
+                    name: Scan_Web_Application
+                    inputs:
+                      - name: aap_job_name
+                        value: '"scan-dast"'
+                      - name: AAP_AUTH
+                        value: $AAP_Auth.result
+                      - name: launch_data
+                        value: |-
+                          {
+                              "job_tags": "",
+                              "extra_vars": JSON.stringify({
+                                  "dast_target_url": "http://web." + $extract_instance_ip.result + ".nip.io",
+                                  "dast_env_name": $Refresh_Deployment.item.name,
+                                  "concert_url": $get_concert_core_url.result,
+                                  "concert_api_key": $get_concert_api_key.result
+                              })
+                          }
+                catch:
+                  - action: system/Common/Status Message Update
+                    name: Dynamic_Scan_Failed_Message
+                    inputs:
+                      - name: message
+                        value: '"Dynamic scan failed for " + $Refresh_Deployment.item.name'
+              - action: if
+                name: code_scan_requested
+                condition: $scan_code == true
+                then:
+                  - action: try
+                    name: Code_Scan
+                    try:
+                      # <app>-<env>-<rand>: app and environment type are the first two parts
+                      - action: ./AAP-run-job-by-name
+                        name: Scan_Application_Code
+                        inputs:
+                          - name: aap_job_name
+                            value: '"scan-code-sast"'
+                          - name: AAP_AUTH
+                            value: $AAP_Auth.result
+                          - name: launch_data
+                            value: |-
+                              {
+                                  "job_tags": "",
+                                  "extra_vars": JSON.stringify({
+                                      "sast_app_name": $Refresh_Deployment.item.name.split("-")[0],
+                                      "sast_application_name": $Refresh_Deployment.item.name.split("-").slice(0, 2).join("-"),
+                                      "sast_force": true,
+                                      "concert_url": $get_concert_core_url.result,
+                                      "concert_api_key": $get_concert_api_key.result
+                                  })
+                              }
+                    catch:
+                      - action: system/Common/Status Message Update
+                        name: Code_Scan_Failed_Message
+                        inputs:
+                          - name: message
+                            value: '"Code scan failed for " + $Refresh_Deployment.item.name'
+                else: []
+            else:
+              - action: system/Common/Status Message Update
+                name: No_Instance_Ip_Message
+                inputs:
+                  - name: message
+                    value: '"No instance_ip output for " + $Refresh_Deployment.item.name + ", skipped"'
+        catch:
+          - action: system/Common/Status Message Update
+            name: Refresh_Failed_Message
+            inputs:
+              - name: message
+                value: '"Refresh failed for " + $Refresh_Deployment.item.name'
+variables:
+  - name: scan_code
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: boolean
+    value: "false"
+  - name: vault_auth
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"ibmconcert/vault"'
+    meta:
+      authType: Common/ConfigData
+      subType: authentication
+  - name: ssh_username
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"ubuntu"'
+  - name: hcp_auth_header
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+meta:
+  version: 5
+  layout: flow
+  workerGroup: default
+  description: Scheduled re-run of the host scan and DAST (and optionally the code scan)
+    for every demo VM that still exists, so Concert shows the current state.
+finally: null
