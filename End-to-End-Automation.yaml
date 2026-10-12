@@ -157,6 +157,38 @@ blocks:
             value: $aap_artifacts.k3s_token
           - name: cluster_name
             value: $aap_artifacts.cluster_name
+      # Host vulnerability scan (Concert vm_scan). Runs after the discovery so the
+      # host already exists in Concert; the AWX job (playbook-vuln-scan.yaml)
+      # scans the VM with Trivy and uploads the result. Best effort: a failed scan
+      # must not fail the provisioning, the scheduled scan retries it.
+      # ec2_ip is the public IP out of k3s_endpoint (https://<ip>:6443).
+      - action: try
+        name: Host_Vulnerability_Scan
+        try:
+          - action: ./AAP-run-job-by-name
+            name: Scan_Host_Vulnerabilities
+            inputs:
+              - name: aap_job_name
+                value: '"scan-host-vulnerabilities"'
+              - name: AAP_AUTH
+                value: $AAP_Auth.result
+              - name: launch_data
+                value: |-
+                  {
+                      "job_tags": "",
+                      "extra_vars": JSON.stringify({
+                          "ec2_ip": $aap_artifacts.k3s_endpoint.replace(/^https?:\/\//, "").replace(/:\d+$/, ""),
+                          "remote_user": $ssh_username,
+                          "concert_url": $get_concert_core_url.result,
+                          "concert_api_key": $get_concert_api_key.result
+                      })
+                  }
+        catch:
+          - action: system/Common/Status Message Update
+            name: Scan_Failed_Message
+            inputs:
+              - name: message
+                value: '"Host vulnerability scan failed, the scheduled scan will retry it"'
     else: []
   - action: assign
     name: Assign_result
