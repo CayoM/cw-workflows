@@ -32,28 +32,39 @@ blocks:
             name: ForEach_1
             list: $Ansible_3.result.results
             blocks:
+              # Take the newest job of this deployment in ANY state. Looking only at
+              # pending/waiting/running jobs missed jobs that failed (or finished) before
+              # this flow started: a job failing after 19 s ended as the misleading
+              # "no Job showed up" (2026-10-12). A failed job is reported by While_1 below.
               - action: if
                 name: If_6
-                condition: "[\"pending\",\"waiting\", \"running\"].includes($ForEach_1.item.status)"
+                condition: "Number($ForEach_1.item.id) > Number($job_id || 0)"
                 then:
-                  - action: system/Common/JSON/JSON Parse
-                    name: JSONParse_1
-                    inputs:
-                      - name: jsonString
-                        value: $ForEach_1.item.extra_vars
-                  - action: if
-                    name: If_5
-                    condition: $JSONParse_1.result.instance_name == $instance_name
-                    then:
-                      - action: assign
-                        name: Assign_4
-                        variable: $loop
-                        value: "false"
-                      - action: assign
-                        name: Assign_6
-                        variable: $job_id
-                        value: $ForEach_1.item.id
-                    else: []
+                  - action: try
+                    name: Try_Match_Job
+                    try:
+                      - action: system/Common/JSON/JSON Parse
+                        name: JSONParse_1
+                        inputs:
+                          - name: jsonString
+                            value: $ForEach_1.item.extra_vars
+                      - action: if
+                        name: If_5
+                        condition: $JSONParse_1.result.instance_name == $instance_name
+                        then:
+                          - action: assign
+                            name: Assign_4
+                            variable: $loop
+                            value: "false"
+                          - action: assign
+                            name: Assign_6
+                            variable: $job_id
+                            value: $ForEach_1.item.id
+                        else: []
+                    catch:
+                      # extra_vars that are not JSON belong to some other job
+                      - action: comment
+                        value: Job has no JSON extra_vars, so it is not ours
                 else: []
         else:
           - action: system/Common/Sleep
