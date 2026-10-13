@@ -222,6 +222,13 @@ blocks:
             inputs:
               - name: message
                 value: '"Refresh failed for " + $Refresh_Deployment.item.name'
+      # Deployments are refreshed one after the other; the pause lets Concert finish
+      # processing the uploads before the next deployment sends its scans.
+      - action: system/Common/Sleep
+        name: Pause_Between_Deployments
+        inputs:
+          - name: seconds
+            value: "90"
 variables:
   - name: scan_code
     required: false

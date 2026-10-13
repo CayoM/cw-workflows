@@ -162,6 +162,15 @@ blocks:
       # scans the VM with Trivy and uploads the result. Best effort: a failed scan
       # must not fail the provisioning, the scheduled scan retries it.
       # ec2_ip is the public IP out of k3s_endpoint (https://<ip>:6443).
+      # Stagger parallel deployments: Concert processes uploads on one small pipeline and
+      # its Postgres (1 GiB) was OOM-killed on 2026-10-13 when three deployments uploaded
+      # scans at once. The offset (0, 90, 180 or 270 s) comes from the deployment id, so
+      # runs started together land in different slots.
+      - action: system/Common/Sleep
+        name: Stagger_Scans
+        inputs:
+          - name: seconds
+            value: "($deployment_id.split(\"\").reduce(function (sum, c) { return sum + c.charCodeAt(0); }, 0) % 4) * 90"
       - action: try
         name: Host_Vulnerability_Scan
         try:
