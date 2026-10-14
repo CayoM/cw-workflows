@@ -176,6 +176,35 @@ blocks:
                     inputs:
                       - name: message
                         value: '"Dynamic scan failed for " + $Refresh_Deployment.item.name'
+              - action: try
+                name: Compliance_Scan
+                try:
+                  - action: ./AAP-run-job-by-name
+                    name: Scan_Cluster_Compliance
+                    inputs:
+                      - name: aap_job_name
+                        value: '"scan-compliance-cis"'
+                      - name: AAP_AUTH
+                        value: $AAP_Auth.result
+                      - name: launch_data
+                        value: |-
+                          {
+                              "job_tags": "",
+                              "extra_vars": JSON.stringify({
+                                  "ec2_ip": $extract_instance_ip.result,
+                                  "remote_user": $ssh_username,
+                                  "compliance_env_name": $Refresh_Deployment.item.name,
+                                  "compliance_application_name": $Refresh_Deployment.item.name.split("-").slice(0, 2).join("-"),
+                                  "concert_url": $get_concert_core_url.result,
+                                  "concert_api_key": $get_concert_api_key.result
+                              })
+                          }
+                catch:
+                  - action: system/Common/Status Message Update
+                    name: Compliance_Scan_Failed_Message
+                    inputs:
+                      - name: message
+                        value: '"Compliance scan failed for " + $Refresh_Deployment.item.name'
               - action: if
                 name: code_scan_requested
                 condition: $scan_code == true
