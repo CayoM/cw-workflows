@@ -105,7 +105,9 @@ blocks:
   # an explicit 404 (auth error, outage) keeps the environment. The workspace
   # is looked up by name instead of diffing against List Workspaces, which is
   # paginated - a missing page would otherwise delete live environments.
-  # Applications are never deleted (shared "<app>-<env>" objects).
+  # Credentials (+ their discovery jobs) and orphaned "<app>-<env>"
+  # applications are reconciled in their own loops below, so leftovers from a
+  # partial earlier run are still picked up once the environment is gone.
   - action: ./HCP_Vault_Dedicated_Get_Secret
     name: get_concert_core_url
     inputs:
@@ -201,26 +203,6 @@ blocks:
         condition: $HashiCorp_3.result.data != null && $extract_is_demo_environment.result == "true" && $extract_workspace_status.result == "404"
         then:
           - action: system/Common/HTTP/HTTP Request
-            name: ListConcertCredentials
-            inputs:
-              - name: method
-                value: '"GET"'
-              - name: host
-                value: $get_concert_core_url.result + "/concert/core/api/v1/credentials"
-              - name: headers
-                value: |-
-                  {
-                      "InstanceId": "0000-0000-0000-0000",
-                      "Authorization": $concert_auth_header
-                  }
-          - action: system/Common/JSON/jq
-            name: extract_credential_ids
-            inputs:
-              - name: JSON
-                value: $ListConcertCredentials.result
-              - name: Filter
-                value: '"[.credentials[] | select(.name==\"" + $Reconcile_Concert.item.name + "\") | .id] | join(\",\")"'
-          - action: system/Common/HTTP/HTTP Request
             name: DeleteConcertEnvironment
             inputs:
               - name: method
@@ -233,8 +215,68 @@ blocks:
                       "InstanceId": "0000-0000-0000-0000",
                       "Authorization": $concert_auth_header
                   }
-          # Discovery jobs are listed under /ingestion_jobs (type discovery_job)
-          # and named "discovery-<deployment_id>" by the Register flow.
+          - action: system/Common/Status Message Update
+            name: report_removed_environment
+            inputs:
+              - name: message
+                value: '"Removed Concert environment " + $Reconcile_Concert.item.name'
+        else: []
+  # Credential reconcile, independent of the environment loop: a credential
+  # whose environment was already deleted (earlier partial run, manual delete)
+  # would otherwise never be visited again. Register names the credential after
+  # the deployment id and gives it the same "Concert demo environment"
+  # description marker. Its discovery jobs are matched by credentials_id, not
+  # by name - re-runs like "discovery-<id>-r2" were missed by an exact name
+  # match and kept the credential alive.
+  - action: system/Common/HTTP/HTTP Request
+    name: ListConcertCredentials
+    inputs:
+      - name: method
+        value: '"GET"'
+      - name: host
+        value: $get_concert_core_url.result + "/concert/core/api/v1/credentials?page_size=500"
+      - name: headers
+        value: |-
+          {
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": $concert_auth_header
+          }
+  - action: system/Common/JSON/jq
+    name: extract_demo_credentials
+    inputs:
+      - name: JSON
+        value: $ListConcertCredentials.result
+      - name: Filter
+        value: '"[.credentials[] | select((.description // \"\") | startswith(\"Concert demo environment\")) | {id, name}]"'
+  - action: foreach
+    name: Reconcile_Credentials
+    list: $extract_demo_credentials.result
+    blocks:
+      - action: system/Common/HTTP/HTTP Request
+        name: GetCredentialWorkspace
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: '"https://app.terraform.io/api/v2/organizations/" + $HCP_TERRAFORM_ORG_NAME + "/workspaces/" + encodeURIComponent($Reconcile_Credentials.item.name)'
+          - name: headers
+            value: |-
+              {
+                  "Authorization": $hcp_auth_header,
+                  "Content-Type": "application/vnd.api+json"
+              }
+      - action: system/Common/JSON/jq
+        name: extract_credential_workspace_status
+        inputs:
+          - name: JSON
+            value: $GetCredentialWorkspace.result
+          - name: Filter
+            value: '"(.errors[0].status // \"found\") | tostring"'
+      - action: if
+        name: credential_workspace_is_gone
+        # Same 404 guard as the environment loop.
+        condition: $HashiCorp_3.result.data != null && $extract_credential_workspace_status.result == "404"
+        then:
           - action: system/Common/HTTP/HTTP Request
             name: ListConcertIngestionJobs
             inputs:
@@ -254,7 +296,7 @@ blocks:
               - name: JSON
                 value: $ListConcertIngestionJobs.result
               - name: Filter
-                value: '"[.ingestion_jobs[] | select(.name==\"discovery-" + $Reconcile_Concert.item.name + "\") | .id]"'
+                value: '"[.ingestion_jobs[] | select(.credentials_id==\"" + $Reconcile_Credentials.item.id + "\") | .id]"'
           - action: foreach
             name: DeleteDiscoveryJobs
             list: $extract_discovery_job_ids.result
@@ -272,29 +314,99 @@ blocks:
                           "InstanceId": "0000-0000-0000-0000",
                           "Authorization": $concert_auth_header
                       }
-          - action: if
-            name: has_credentials
-            condition: $extract_credential_ids.result != "" && $extract_credential_ids.result != null
-            then:
-              - action: system/Common/HTTP/HTTP Request
-                name: DeleteConcertCredentials
-                inputs:
-                  - name: method
-                    value: '"DELETE"'
-                  - name: host
-                    value: $get_concert_core_url.result + "/concert/core/api/v1/credentials?delete_ids=" + $extract_credential_ids.result
-                  - name: headers
-                    value: |-
-                      {
-                          "InstanceId": "0000-0000-0000-0000",
-                          "Authorization": $concert_auth_header
-                      }
-            else: []
+          - action: system/Common/HTTP/HTTP Request
+            name: DeleteConcertCredential
+            inputs:
+              - name: method
+                value: '"DELETE"'
+              - name: host
+                value: $get_concert_core_url.result + "/concert/core/api/v1/credentials?delete_ids=" + $Reconcile_Credentials.item.id
+              - name: headers
+                value: |-
+                  {
+                      "InstanceId": "0000-0000-0000-0000",
+                      "Authorization": $concert_auth_header
+                  }
           - action: system/Common/Status Message Update
-            name: report_removed_environment
+            name: report_removed_credential
             inputs:
               - name: message
-                value: '"Removed Concert environment " + $Reconcile_Concert.item.name'
+                value: '"Removed Concert credential " + $Reconcile_Credentials.item.name'
+        else: []
+  # Application reconcile: discovery creates one "<app>-<env>" application per
+  # environment type (shared by all deployments of that type). Once its last
+  # environment is gone the application only carries stale findings, so it is
+  # deleted. Three guards keep non-demo applications safe (sample apps and
+  # other ingested apps also have no environments): the name ends in one of
+  # Register's environment types, criticality > 0 (only Register sets it), and
+  # the detail call lists no environment. A failed detail call has neither
+  # field, so it never deletes.
+  - action: system/Common/HTTP/HTTP Request
+    name: ListConcertApplications
+    inputs:
+      - name: method
+        value: '"GET"'
+      - name: host
+        value: $get_concert_core_url.result + "/concert/core/api/v2/applications?page_size=500"
+      - name: headers
+        value: |-
+          {
+              "InstanceId": "0000-0000-0000-0000",
+              "Authorization": $concert_auth_header
+          }
+  - action: system/Common/JSON/jq
+    name: extract_demo_applications
+    inputs:
+      - name: JSON
+        value: $ListConcertApplications.result
+      - name: Filter
+        value: '"[.applications[] | select(.sample != true and (.name | endswith(\"-prod\") or endswith(\"-stage\") or endswith(\"-int\") or endswith(\"-dev\"))) | {id, name, version}]"'
+  - action: foreach
+    name: Reconcile_Applications
+    list: $extract_demo_applications.result
+    blocks:
+      - action: system/Common/HTTP/HTTP Request
+        name: GetConcertApplication
+        inputs:
+          - name: method
+            value: '"GET"'
+          - name: host
+            value: $get_concert_core_url.result + "/concert/core/api/v1/applications/" + $Reconcile_Applications.item.id + "?release_version=" + encodeURIComponent($Reconcile_Applications.item.version)
+          - name: headers
+            value: |-
+              {
+                  "InstanceId": "0000-0000-0000-0000",
+                  "Authorization": $concert_auth_header
+              }
+      - action: system/Common/JSON/jq
+        name: extract_is_orphaned_application
+        inputs:
+          - name: JSON
+            value: $GetConcertApplication.result
+          - name: Filter
+            value: '"(.associations != null and ((.associations.environments // []) | length) == 0 and (.criticality // 0) > 0) | tostring"'
+      - action: if
+        name: application_is_orphaned
+        condition: $extract_is_orphaned_application.result == "true"
+        then:
+          - action: system/Common/HTTP/HTTP Request
+            name: DeleteConcertApplication
+            inputs:
+              - name: method
+                value: '"DELETE"'
+              - name: host
+                value: $get_concert_core_url.result + "/concert/core/api/v2/applications/" + $Reconcile_Applications.item.id
+              - name: headers
+                value: |-
+                  {
+                      "InstanceId": "0000-0000-0000-0000",
+                      "Authorization": $concert_auth_header
+                  }
+          - action: system/Common/Status Message Update
+            name: report_removed_application
+            inputs:
+              - name: message
+                value: '"Removed orphaned Concert application " + $Reconcile_Applications.item.name'
         else: []
 variables:
   - name: result
@@ -372,6 +484,7 @@ meta:
   layout: flow
   workerGroup: default
   description: This workflow deletes auto-destroyed HCP Terraform workspaces (resources
-    are destroyed after 1 hour without changes) and removes Concert environments (and
-    their credentials) whose workspace no longer exists.
+    are destroyed after 1 hour without changes), removes Concert environments,
+    credentials and discovery jobs whose workspace no longer exists, and deletes
+    "<app>-<env>" applications left without any environment.
 finally: null
