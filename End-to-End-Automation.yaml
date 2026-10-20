@@ -171,6 +171,58 @@ blocks:
         inputs:
           - name: seconds
             value: "($deployment_id.split(\"\").reduce(function (sum, c) { return sum + c.charCodeAt(0); }, 0) % 4) * 90"
+      # Concert auto-remediation (OS patching, approval via ServiceNow). Before the host
+      # scan: Concert needs the VM's Deploy SBOM (os/version) when it evaluates the scan,
+      # otherwise it creates no remediation actions. The AWX job (playbook-remediation-
+      # register.yaml) uploads the SBOM and points the patch authentications in Concert
+      # Workflows at this VM; cw_url / cw_admin_password come from Vault (post_config).
+      # Best effort like the scans.
+      - action: try
+        name: Remediation_Registration
+        try:
+          - action: ./HCP_Vault_Dedicated_Get_Secret
+            name: get_cw_url
+            inputs:
+              - name: secret_name
+                value: '"cw_url"'
+              - name: HCP_AUTH_SECRET
+                value: $vault_auth
+          - action: ./HCP_Vault_Dedicated_Get_Secret
+            name: get_cw_admin_password
+            inputs:
+              - name: secret_name
+                value: '"cw_admin_password"'
+              - name: HCP_AUTH_SECRET
+                value: $vault_auth
+          - action: ./AAP-run-job-by-name
+            name: Register_VM_For_Remediation
+            inputs:
+              - name: aap_job_name
+                value: '"remediation-register"'
+              - name: AAP_AUTH
+                value: $AAP_Auth.result
+              - name: launch_data
+                value: |-
+                  {
+                      "job_tags": "",
+                      "extra_vars": JSON.stringify({
+                          "ec2_ip": $aap_artifacts.k3s_endpoint.replace(/^https?:\/\//, "").replace(/:\d+$/, ""),
+                          "remote_user": $ssh_username,
+                          "ssh_private_key": $get_ssh_private_key.result,
+                          "concert_url": $get_concert_core_url.result,
+                          "concert_api_key": $get_concert_api_key.result,
+                          "cw_url": $get_cw_url.result,
+                          "cw_admin_password": $get_cw_admin_password.result,
+                          "remediation_env_name": $deployment_id,
+                          "remediation_application_name": ($app_name + "-" + $environment_type).toLowerCase()
+                      })
+                  }
+        catch:
+          - action: system/Common/Status Message Update
+            name: Remediation_Registration_Failed_Message
+            inputs:
+              - name: message
+                value: '"Registration for auto-remediation failed, OS patching is not available for this VM"'
       - action: try
         name: Host_Vulnerability_Scan
         try:

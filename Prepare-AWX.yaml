@@ -2,20 +2,23 @@ name: Prepare-AWX
 platform: node
 blocks:
   - action: ./HCP_Vault_Dedicated_Get_Secret
-    name: AWX_Password
+    name: get_aap_password
     inputs:
       - name: secret_name
-        value: $AWX_PASSWORD_SECRET_NAME
+        value: $aap_password_secret_name
       - name: HCP_AUTH_SECRET
-        value: $VAULT_SECRET
-      - name: HCP_VAULT_URL
-        value: $VAULT_URL
-      - name: HCP_VAULT_NAMESPACE
-        value: $VAULT_NAMESPACE
+        value: $vault_auth
+  - action: ./HCP_Vault_Dedicated_Get_Secret
+    name: get_aap_url
+    inputs:
+      - name: secret_name
+        value: $aap_url_secret_name
+      - name: HCP_AUTH_SECRET
+        value: $vault_auth
   - name: AuthOverride_1
     action: authOverride
     authentication: '"ibmconcert/awx"'
-    override: "{\"host\":$AAP_URL,\"username\":\"admin\",\"password\":$AWX_Password.result}"
+    override: "{\"host\":$get_aap_url.result,\"username\":\"admin\",\"password\":$get_aap_password.result}"
   - action: system/Ansible/Tower/Projects/Projects Create
     name: Create_Project
     inputs:
@@ -55,33 +58,9 @@ blocks:
       - name: data
         value: "{\"id\": 1}"
 variables:
-  - name: AWX_PASSWORD_SECRET_NAME
+  - name: vault_auth
     required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"awx_admin_password_cs"'
-  - name: VAULT_URL
-    required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"https://ria-demo-cluster-public-vault-65f83eee.f89bf1f5.z1.hashicorp.cloud:8200"'
-  - name: VAULT_NAMESPACE
-    required: false
-    isInput: true
-    isOutput: false
-    level: INTERMEDIATE
-    type:
-      type: string
-    value: '"admin"'
-  - name: VAULT_SECRET
-    required: false
-    isInput: true
+    isInput: false
     isOutput: false
     level: INTERMEDIATE
     type:
@@ -90,14 +69,22 @@ variables:
     meta:
       authType: ANY
       subType: authentication
-  - name: AAP_URL
+  - name: aap_url_secret_name
     required: false
     isInput: false
     isOutput: false
     level: INTERMEDIATE
     type:
       type: string
-    value: '"awx-awx.apps.itz-hs0zgu.hub01-lb.techzone.ibm.com/"'
+    value: '"awx_url"'
+  - name: aap_password_secret_name
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"awx_admin_password"'
   - name: GIT_URL
     required: false
     isInput: false
