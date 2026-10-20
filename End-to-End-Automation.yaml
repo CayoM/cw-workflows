@@ -214,6 +214,7 @@ blocks:
                           "cw_url": $get_cw_url.result,
                           "cw_admin_password": $get_cw_admin_password.result,
                           "remediation_env_name": $deployment_id,
+                          "remediation_environment_type": $environment_type,
                           "remediation_application_name": ($app_name + "-" + $environment_type).toLowerCase()
                       })
                   }
