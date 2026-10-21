@@ -8,7 +8,9 @@ blocks:
   # right away for each scheduled OS action, with the same filter IBM's own job uses,
   # and afterwards re-scans that VM so Concert closes the fixed CVEs live.
   # Remediation_Master only takes actions in approved/scheduled and sets them to
-  # in_progress first, so an overlapping run finds nothing. Background:
+  # in_progress first, so an overlapping run finds nothing. It sets a failed run back to
+  # approved; searching approved too (IBM's own Remediation_Master filter) retries it in
+  # the next minute instead of waiting for Monitor's +24 h job. Background:
   # optimized-solution docs/WORKAROUNDS.md.
   - action: system/IBM/Concert v2/Action Insights/Search in Actions
     name: GetScheduledActions
@@ -20,8 +22,8 @@ blocks:
                   "logic": "and",
                   "conditions": [{
                       "field": "status",
-                      "value": "scheduled",
-                      "operator": "="
+                      "value": "approved,scheduled",
+                      "operator": "IN"
                   }, {
                       "field": "action_category",
                       "value": "auto_remediation",
