@@ -11,7 +11,10 @@ blocks:
   # in_progress first, so an overlapping run finds nothing. It sets a failed run back to
   # approved; searching approved too (IBM's own Remediation_Master filter) retries it in
   # the next minute instead of waiting for Monitor's +24 h job, up to max_attempts patch
-  # runs (counted in the action history), so an action whose VM is gone stops. Background:
+  # runs (counted in the action history). Then it gives the action up: status failed
+  # (like IBM's flows mark a failed PR) and its ServiceNow incident canceled. A left-over
+  # approved action would make Monitor fail every run on its existing +24 h job (409
+  # Duplicate entry), and with it every newer action. Background:
   # optimized-solution docs/WORKAROUNDS.md.
   - action: system/IBM/Concert v2/Action Insights/Search in Actions
     name: GetScheduledActions
@@ -40,22 +43,77 @@ blocks:
                   "page_size": 50
               }
           }
-  - action: assign
-    name: Assign_Scheduled_Actions
-    variable: $scheduled_actions
-    value: >-
-      (Array.isArray($GetScheduledActions?.result?.actions) ? $GetScheduledActions.result.actions : [])
-      .filter(a => {
+  - name: Split_By_Attempts
+    function: |-
+      const found = Array.isArray($GetScheduledActions?.result?.actions) ? $GetScheduledActions.result.actions : [];
+      const attempts = a => {
         let history = [];
         try { history = Array.isArray(a.history) ? a.history : JSON.parse(a.history || "[]"); } catch (e) { history = []; }
-        return history.filter(h => h.event === "update status to in_progress").length < $max_attempts;
-      })
+        return history.filter(h => h.event === "update status to in_progress").length;
+      };
+      $scheduled_actions = found.filter(a => attempts(a) < $max_attempts);
+      $abandoned_actions = found.filter(a => attempts(a) >= $max_attempts);
   - action: if
-    name: No_Scheduled_Actions
-    condition: $scheduled_actions.length == 0
+    name: Nothing_To_Do
+    condition: $scheduled_actions.length == 0 && $abandoned_actions.length == 0
     then:
       - action: exit
     else: []
+  - action: foreach
+    name: Abandon_Action
+    list: $abandoned_actions
+    blocks:
+      - action: try
+        name: Abandon_One
+        try:
+          - action: system/IBM/Concert v2/Action Insights/Update Existing Action
+            name: Mark_Action_Failed
+            inputs:
+              - name: Body
+                value: |-
+                  {
+                      "actions": [{
+                          "action_id": $Abandon_Action.item.actions_identifier,
+                          "status": "failed",
+                          "history": JSON.stringify({
+                              "event": "Remediation given up",
+                              "user": "ibmconcert",
+                              "timestamp": Math.floor(Date.now() / 1000),
+                              "comments": "Patch failed " + $max_attempts + " times (Run_Approved_Remediation), e.g. the VM is gone."
+                          })
+                      }]
+                  }
+          - action: assign
+            name: Assign_Incident
+            variable: $incident_sys_id
+            value: '((JSON.parse($Abandon_Action.item.action_details || "{}").change_request || {}).identifier || "")'
+          - action: if
+            name: Has_Incident
+            condition: $incident_sys_id != ""
+            then:
+              - action: system/ServiceNow/updateTable
+                name: Cancel_Incident
+                inputs:
+                  - name: authKey
+                    value: $sm_auth
+                  - name: tableName
+                    value: "'incident'"
+                  - name: sys_id
+                    value: $incident_sys_id
+                  - name: Table
+                    value: '{"state": "8", "close_notes": "Concert gave up the remediation after " + $max_attempts + " failed patch runs."}'
+            else: []
+          - action: system/Common/Status Message Update
+            name: Report_Abandoned
+            inputs:
+              - name: message
+                value: '"Gave up action " + $Abandon_Action.item.actions_identifier + " on " + $Abandon_Action.item.target_component_identifier'
+        catch:
+          - action: system/Common/Status Message Update
+            name: Abandon_Failed_Message
+            inputs:
+              - name: message
+                value: '"Could not give up action " + $Abandon_Action.item.actions_identifier'
   - action: foreach
     name: Remediate_Action
     list: $scheduled_actions
@@ -132,6 +190,22 @@ variables:
     type:
       type: array
     value: "[]"
+  - name: abandoned_actions
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: array
+    value: "[]"
+  - name: incident_sys_id
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
   - name: environment_name
     required: false
     isInput: false
