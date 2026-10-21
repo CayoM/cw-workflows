@@ -6,7 +6,9 @@ blocks:
   # Live VMs come from HCP Terraform (workspace name = deployment id, output instance_ip),
   # the same source the cleanup flow uses. Always: host scan + DAST. With scan_code
   # (daily schedule): also the code scan with sast_force. One failing deployment or scan
-  # never stops the others.
+  # never stops the others. With deployment_id only that deployment is scanned, with
+  # host_scan_only only the host scan runs (Run_Approved_Remediation re-scans a VM right
+  # after patching it).
   - action: ./HCP_Vault_Dedicated_Get_Secret
     name: get_terraform_api_key
     inputs:
@@ -86,14 +88,18 @@ blocks:
         value: $ListWorkspaces.result
       - name: Filter
         value: '"[.data[] | select((.attributes.name | test(\"^[a-z0-9]+-(prod|dev|int|stage)-[a-z0-9]{4}$\")) and ((.attributes[\"resource-count\"] // 0) > 0)) | {id, name: .attributes.name}]"'
+  - action: assign
+    name: select_workspaces
+    variable: $target_workspaces
+    value: '$extract_live_workspaces.result.filter(w => !$deployment_id || w.name === $deployment_id)'
   - action: system/Common/Status Message Update
     name: report_workspaces
     inputs:
       - name: message
-        value: '"Live demo deployments: " + JSON.stringify($extract_live_workspaces.result)'
+        value: '"Live demo deployments: " + JSON.stringify($target_workspaces)'
   - action: foreach
     name: Refresh_Deployment
-    list: $extract_live_workspaces.result
+    list: $target_workspaces
     blocks:
       - action: try
         name: Refresh_One
@@ -149,65 +155,70 @@ blocks:
                     inputs:
                       - name: message
                         value: '"Host scan failed for " + $Refresh_Deployment.item.name'
-              - action: try
-                name: Dynamic_Scan
-                try:
-                  - action: ./AAP-run-job-by-name
-                    name: Scan_Web_Application
-                    inputs:
-                      - name: aap_job_name
-                        value: '"scan-dast"'
-                      - name: AAP_AUTH
-                        value: $AAP_Auth.result
-                      - name: launch_data
-                        value: |-
-                          {
-                              "job_tags": "",
-                              "extra_vars": JSON.stringify({
-                                  "dast_target_url": "http://web." + $extract_instance_ip.result + ".nip.io",
-                                  "dast_env_name": $Refresh_Deployment.item.name,
-                                  "concert_url": $get_concert_core_url.result,
-                                  "concert_api_key": $get_concert_api_key.result
-                              })
-                          }
-                catch:
-                  - action: system/Common/Status Message Update
-                    name: Dynamic_Scan_Failed_Message
-                    inputs:
-                      - name: message
-                        value: '"Dynamic scan failed for " + $Refresh_Deployment.item.name'
-              - action: try
-                name: Compliance_Scan
-                try:
-                  - action: ./AAP-run-job-by-name
-                    name: Scan_Cluster_Compliance
-                    inputs:
-                      - name: aap_job_name
-                        value: '"scan-compliance-cis"'
-                      - name: AAP_AUTH
-                        value: $AAP_Auth.result
-                      - name: launch_data
-                        value: |-
-                          {
-                              "job_tags": "",
-                              "extra_vars": JSON.stringify({
-                                  "ec2_ip": $extract_instance_ip.result,
-                                  "remote_user": $ssh_username,
-                                  "compliance_env_name": $Refresh_Deployment.item.name,
-                                  "compliance_application_name": $Refresh_Deployment.item.name.split("-").slice(0, 2).join("-"),
-                                  "concert_url": $get_concert_core_url.result,
-                                  "concert_api_key": $get_concert_api_key.result
-                              })
-                          }
-                catch:
-                  - action: system/Common/Status Message Update
-                    name: Compliance_Scan_Failed_Message
-                    inputs:
-                      - name: message
-                        value: '"Compliance scan failed for " + $Refresh_Deployment.item.name'
+              - action: if
+                name: other_scans_requested
+                condition: $host_scan_only != true
+                then:
+                  - action: try
+                    name: Dynamic_Scan
+                    try:
+                      - action: ./AAP-run-job-by-name
+                        name: Scan_Web_Application
+                        inputs:
+                          - name: aap_job_name
+                            value: '"scan-dast"'
+                          - name: AAP_AUTH
+                            value: $AAP_Auth.result
+                          - name: launch_data
+                            value: |-
+                              {
+                                  "job_tags": "",
+                                  "extra_vars": JSON.stringify({
+                                      "dast_target_url": "http://web." + $extract_instance_ip.result + ".nip.io",
+                                      "dast_env_name": $Refresh_Deployment.item.name,
+                                      "concert_url": $get_concert_core_url.result,
+                                      "concert_api_key": $get_concert_api_key.result
+                                  })
+                              }
+                    catch:
+                      - action: system/Common/Status Message Update
+                        name: Dynamic_Scan_Failed_Message
+                        inputs:
+                          - name: message
+                            value: '"Dynamic scan failed for " + $Refresh_Deployment.item.name'
+                  - action: try
+                    name: Compliance_Scan
+                    try:
+                      - action: ./AAP-run-job-by-name
+                        name: Scan_Cluster_Compliance
+                        inputs:
+                          - name: aap_job_name
+                            value: '"scan-compliance-cis"'
+                          - name: AAP_AUTH
+                            value: $AAP_Auth.result
+                          - name: launch_data
+                            value: |-
+                              {
+                                  "job_tags": "",
+                                  "extra_vars": JSON.stringify({
+                                      "ec2_ip": $extract_instance_ip.result,
+                                      "remote_user": $ssh_username,
+                                      "compliance_env_name": $Refresh_Deployment.item.name,
+                                      "compliance_application_name": $Refresh_Deployment.item.name.split("-").slice(0, 2).join("-"),
+                                      "concert_url": $get_concert_core_url.result,
+                                      "concert_api_key": $get_concert_api_key.result
+                                  })
+                              }
+                    catch:
+                      - action: system/Common/Status Message Update
+                        name: Compliance_Scan_Failed_Message
+                        inputs:
+                          - name: message
+                            value: '"Compliance scan failed for " + $Refresh_Deployment.item.name'
+                else: []
               - action: if
                 name: code_scan_requested
-                condition: $scan_code == true
+                condition: $scan_code == true && $host_scan_only != true
                 then:
                   - action: try
                     name: Code_Scan
@@ -259,6 +270,30 @@ blocks:
           - name: seconds
             value: "90"
 variables:
+  - name: deployment_id
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+  - name: host_scan_only
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: boolean
+    value: "false"
+  - name: target_workspaces
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: array
+    value: "[]"
   - name: scan_code
     required: false
     isInput: true

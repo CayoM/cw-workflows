@@ -1,0 +1,132 @@
+name: Run_Approved_Remediation
+platform: node
+blocks:
+  # Demo timing for Concert OS auto-remediation. IBM's Monitor_Remediation_Action_Status
+  # marks an action "scheduled" once its ServiceNow incident is "In Progress", then plans
+  # Remediation_Master for the maintenance window, or +24 h without one. A demo lasts
+  # 15 minutes, so this flow (scheduled every minute) starts IBM's Remediation_Master
+  # right away for each scheduled OS action, with the same filter IBM's own job uses,
+  # and afterwards re-scans that VM so Concert closes the fixed CVEs live.
+  # Remediation_Master only takes actions in approved/scheduled and sets them to
+  # in_progress first, so an overlapping run finds nothing. Background:
+  # optimized-solution docs/WORKAROUNDS.md.
+  - action: system/IBM/Concert v2/Action Insights/Search in Actions
+    name: GetScheduledActions
+    inputs:
+      - name: Body
+        value: |-
+          {
+              "filters": {
+                  "logic": "and",
+                  "conditions": [{
+                      "field": "status",
+                      "value": "scheduled",
+                      "operator": "="
+                  }, {
+                      "field": "action_category",
+                      "value": "auto_remediation",
+                      "operator": "="
+                  }, {
+                      "field": "target_component_type",
+                      "value": "os",
+                      "operator": "="
+                  }]
+              },
+              "pagination": {
+                  "page": 1,
+                  "page_size": 50
+              }
+          }
+  - action: assign
+    name: Assign_Scheduled_Actions
+    variable: $scheduled_actions
+    value: '(Array.isArray($GetScheduledActions?.result?.actions) ? $GetScheduledActions.result.actions : [])'
+  - action: if
+    name: No_Scheduled_Actions
+    condition: $scheduled_actions.length == 0
+    then:
+      - action: exit
+    else: []
+  - action: foreach
+    name: Remediate_Action
+    list: $scheduled_actions
+    blocks:
+      - action: try
+        name: Remediate_One
+        try:
+          - action: assign
+            name: Assign_Environment
+            variable: $environment_name
+            value: '(JSON.parse($Remediate_Action.item.action_details || "{}").environment || "")'
+          - action: system/Common/Status Message Update
+            name: Report_Start
+            inputs:
+              - name: message
+                value: '"Patching action " + $Remediate_Action.item.actions_identifier + " on " + $Remediate_Action.item.target_component_identifier + " (" + $environment_name + ")"'
+          - action: ./Remediation_Master/Remediation_Master
+            name: Run_Remediation_Master
+            inputs:
+              - name: filter
+                value: '{"field": "actions_identifier", "operator": "=", "value": String($Remediate_Action.item.actions_identifier)}'
+              - name: linux_auth
+                value: $linux_auth
+              - name: sm_auth
+                value: $sm_auth
+          - action: if
+            name: Has_Environment
+            condition: $environment_name != ""
+            then:
+              - action: ./Refresh-Scans
+                name: Rescan_Host
+                inputs:
+                  - name: deployment_id
+                    value: $environment_name
+                  - name: host_scan_only
+                    value: "true"
+            else: []
+        catch:
+          - action: system/Common/Status Message Update
+            name: Remediation_Failed_Message
+            inputs:
+              - name: message
+                value: '"Remediation failed for action " + $Remediate_Action.item.actions_identifier'
+variables:
+  - name: linux_auth
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"ibmconcert/remediation-linux-configs"'
+  - name: sm_auth
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '"ibmconcert/snow"'
+  - name: scheduled_actions
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: array
+    value: "[]"
+  - name: environment_name
+    required: false
+    isInput: false
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: string
+    value: '""'
+meta:
+  version: 5
+  layout: flow
+  workerGroup: default
+  description: Demo timing - starts IBM's Remediation_Master right after a ServiceNow
+    approval (instead of +24 h) and re-scans the patched VM.
+finally: null
