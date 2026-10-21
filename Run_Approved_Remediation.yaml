@@ -10,7 +10,8 @@ blocks:
   # Remediation_Master only takes actions in approved/scheduled and sets them to
   # in_progress first, so an overlapping run finds nothing. It sets a failed run back to
   # approved; searching approved too (IBM's own Remediation_Master filter) retries it in
-  # the next minute instead of waiting for Monitor's +24 h job. Background:
+  # the next minute instead of waiting for Monitor's +24 h job, up to max_attempts patch
+  # runs (counted in the action history), so an action whose VM is gone stops. Background:
   # optimized-solution docs/WORKAROUNDS.md.
   - action: system/IBM/Concert v2/Action Insights/Search in Actions
     name: GetScheduledActions
@@ -42,7 +43,13 @@ blocks:
   - action: assign
     name: Assign_Scheduled_Actions
     variable: $scheduled_actions
-    value: '(Array.isArray($GetScheduledActions?.result?.actions) ? $GetScheduledActions.result.actions : [])'
+    value: >-
+      (Array.isArray($GetScheduledActions?.result?.actions) ? $GetScheduledActions.result.actions : [])
+      .filter(a => {
+        let history = [];
+        try { history = Array.isArray(a.history) ? a.history : JSON.parse(a.history || "[]"); } catch (e) { history = []; }
+        return history.filter(h => h.event === "update status to in_progress").length < $max_attempts;
+      })
   - action: if
     name: No_Scheduled_Actions
     condition: $scheduled_actions.length == 0
@@ -93,6 +100,14 @@ blocks:
               - name: message
                 value: '"Remediation failed for action " + $Remediate_Action.item.actions_identifier'
 variables:
+  - name: max_attempts
+    required: false
+    isInput: true
+    isOutput: false
+    level: INTERMEDIATE
+    type:
+      type: number
+    value: "5"
   - name: linux_auth
     required: false
     isInput: true
